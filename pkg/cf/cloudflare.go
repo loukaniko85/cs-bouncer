@@ -120,6 +120,11 @@ func (cfState *CloudflareState) UpdateExpr() bool {
 	return isNew
 }
 
+// RankedBlocklistListener receives each worker's ranked IPs after trimming.
+type RankedBlocklistListener interface {
+	Publish(accountID string, ips []string)
+}
+
 // DecisionEvent carries a stream update with a monotonic sequence number so a
 // delayed weekly snapshot cannot overwrite newer LAPI deltas.
 type DecisionEvent struct {
@@ -137,6 +142,7 @@ type CloudflareWorker struct {
 	IPListState         IPListState
 	ActiveDecisions     map[string]map[string]*models.Decision
 	Ranker              *rank.Ranker
+	BlocklistListener   RankedBlocklistListener
 	rankingConfig       cfg.RankingConfig
 	Ctx                 context.Context
 	Events              chan DecisionEvent
@@ -420,6 +426,19 @@ func (worker *CloudflareWorker) pruneExpired(now time.Time) {
 	}
 }
 
+func (worker *CloudflareWorker) publishRankedIPs(ranked []*models.Decision) {
+	if worker.BlocklistListener == nil {
+		return
+	}
+	ips := make([]string, 0, len(ranked))
+	for _, d := range ranked {
+		if d.Value != nil {
+			ips = append(ips, *d.Value)
+		}
+	}
+	worker.BlocklistListener.Publish(worker.Account.ID, ips)
+}
+
 // Reconcile recomputes the desired list contents from active decisions.
 func (worker *CloudflareWorker) Reconcile() error {
 	now := time.Now()
@@ -459,6 +478,8 @@ func (worker *CloudflareWorker) Reconcile() error {
 		RankingDroppedTotal.Add(float64(len(ranked) - capacity))
 		ranked = ranked[:capacity]
 	}
+
+	worker.publishRankedIPs(ranked)
 
 	newSet := make(map[string]IPSetItem, len(ranked))
 	for _, d := range ranked {

@@ -303,6 +303,55 @@ func TestUpdateRulesUsesRulesetsAPI(t *testing.T) {
 	require.Equal(t, 1, api.UpdateEntrypointCalls)
 }
 
+type recordingListener struct {
+	accounts []string
+	ips      [][]string
+}
+
+func (r *recordingListener) Publish(account string, ips []string) {
+	r.accounts = append(r.accounts, account)
+	r.ips = append(r.ips, ips)
+}
+
+func TestReconcilePublishesRankedIPs(t *testing.T) {
+	api := &mockCloudflareAPI{
+		IPLists:     []cloudflare.IPList{{ID: "11", Name: "wafblocklist"}},
+		IPListItems: make(map[string][]cloudflare.IPListItem),
+		ZoneList:    []cloudflare.Zone{{ID: "zone1"}},
+	}
+	listener := &recordingListener{}
+	w := newTestWorker(t, api, testAccount())
+	w.BlocklistListener = listener
+	require.NoError(t, w.Init())
+	require.NoError(t, w.SetUpCloudflareResources())
+	w.ApplyFullSnapshot(&models.DecisionsStreamResponse{New: []*models.Decision{
+		newDecision("0day-exploit", "ban", "1.1.1.1", "ip", time.Now().Add(4*time.Hour)),
+		newDecision("http-scan", "ban", "2.2.2.2", "ip", time.Now().Add(4*time.Hour)),
+	}})
+	require.NoError(t, w.Reconcile())
+	require.Equal(t, []string{"dummyID"}, listener.accounts)
+	require.Equal(t, []string{"1.1.1.1", "2.2.2.2"}, listener.ips[0])
+}
+
+func TestReconcilePublishesBeforeCloudflareError(t *testing.T) {
+	api := &mockCloudflareAPI{
+		IPLists:       []cloudflare.IPList{{ID: "11", Name: "wafblocklist"}},
+		IPListItems:   make(map[string][]cloudflare.IPListItem),
+		ZoneList:      []cloudflare.Zone{{ID: "zone1"}},
+		EntrypointErr: errors.New("cloudflare down"),
+	}
+	listener := &recordingListener{}
+	w := newTestWorker(t, api, testAccount())
+	w.BlocklistListener = listener
+	require.NoError(t, w.Init())
+	require.NoError(t, w.SetUpCloudflareResources())
+	w.ApplyFullSnapshot(&models.DecisionsStreamResponse{New: []*models.Decision{
+		newDecision("0day-exploit", "ban", "1.1.1.1", "ip", time.Now().Add(4*time.Hour)),
+	}})
+	require.Error(t, w.Reconcile())
+	require.Equal(t, []string{"1.1.1.1"}, listener.ips[0])
+}
+
 func TestReconcileTickSwallowsErrors(t *testing.T) {
 	api := &mockCloudflareAPI{
 		IPLists:       []cloudflare.IPList{{ID: "11", Name: "crowdsec_block"}},
