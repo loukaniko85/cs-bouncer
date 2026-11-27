@@ -52,6 +52,18 @@ cloudflare_config:
       cscli: 0
       lists: 0
 
+# Optional UniFi Dream Machine Pro blocklist sync. Disabled by default.
+unifi:
+  enabled: false
+  url: https://10.0.24.1
+  site: default
+  username: <unifi_local_user>
+  password: ${UNIFI_PASSWORD}
+  group_name: CrowdSec_Block
+  max_items: 10000
+  insecure_skip_verify: true
+  update_frequency: 5m
+
 # Bouncer Config
 daemon: false
 log_mode: stdout

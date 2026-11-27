@@ -36,6 +36,25 @@ The `ranking` block in the config is fully tunable; a `{{YEAR}}` token in a
 pattern is expanded to the current year. An invalid regex or negative score
 fails config validation at startup.
 
+## UniFi Dream Machine Pro sync (optional)
+
+Set `unifi.enabled: true` and fill in the UDM Pro URL, site, and a dedicated
+local account. On each `unifi.update_frequency` tick (default `5m`) the bouncer
+replaces the members of one IPv4 address group with the same ranked blocklist
+used for Cloudflare. Only IPv4 addresses and CIDRs are written; `/32` is
+collapsed to a bare address, and the group is capped at `max_items` (10,000).
+
+You create the firewall rule **once** in UniFi Network: Settings → Routing &
+Firewall → Firewall, a WAN IN / traffic rule whose source is the
+`CrowdSec_Block` address group and whose action is Drop. The bouncer only
+manages group membership — it never creates or modifies rules.
+
+UniFi's controller API is unofficial and session-based; the bouncer logs in
+with the cookie/CSRF flow and re-authenticates on 401. Failures are logged and
+retried on the next tick, and never stop Cloudflare updates. Use a dedicated
+local UniFi user, and pass the password via `${UNIFI_PASSWORD}` rather than
+storing it in plain text.
+
 ## Migration notes
 
 This version uses Cloudflare's **Rulesets API** for WAF rules; the legacy

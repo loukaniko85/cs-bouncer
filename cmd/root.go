@@ -11,7 +11,9 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -27,7 +29,57 @@ import (
 
 	"github.com/crowdsecurity/cs-cloudflare-bouncer/pkg/cf"
 	"github.com/crowdsecurity/cs-cloudflare-bouncer/pkg/cfg"
+	"github.com/crowdsecurity/cs-cloudflare-bouncer/pkg/unifi"
 )
+
+// blocklistCoordinator merges every account's ranked IPs into one UniFi group.
+type blocklistCoordinator struct {
+	mu        sync.Mutex
+	byAccount map[string][]string
+	client    *unifi.Client
+}
+
+func (c *blocklistCoordinator) Publish(accountID string, ips []string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.byAccount == nil {
+		c.byAccount = make(map[string][]string)
+	}
+	c.byAccount[accountID] = append([]string(nil), ips...)
+}
+
+func (c *blocklistCoordinator) snapshot() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	result := make([]string, 0)
+	seen := make(map[string]struct{})
+	for _, accountID := range sortedKeys(c.byAccount) {
+		for _, ip := range c.byAccount[accountID] {
+			if _, duplicate := seen[ip]; duplicate {
+				continue
+			}
+			seen[ip] = struct{}{}
+			result = append(result, ip)
+		}
+	}
+	return result
+}
+
+func sortedKeys(m map[string][]string) []string {
+	keys := make([]string, 0, len(m))
+	for key := range m {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func (c *blocklistCoordinator) Sync(ctx context.Context) error {
+	if c.client == nil {
+		return nil
+	}
+	return c.client.SyncGroup(ctx, c.snapshot())
+}
 
 const (
 	DEFAULT_CONFIG_PATH = "/etc/crowdsec/bouncers/crowdsec-cloudflare-bouncer.yaml"
@@ -143,6 +195,13 @@ func Execute() error {
 	var csLAPI *csbouncer.StreamBouncer
 
 	g, ctx := errgroup.WithContext(context.Background())
+	var coordinator *blocklistCoordinator
+	if conf.Unifi.Enabled {
+		coordinator = &blocklistCoordinator{
+			byAccount: make(map[string][]string),
+			client:    unifi.New(conf.Unifi),
+		}
+	}
 	// events are used to forward deltas and weekly snapshots to all workers
 	// through one ordered channel per worker.
 	eventStreams := make([]chan cf.DecisionEvent, 0)
@@ -170,6 +229,9 @@ func Execute() error {
 			TokenCallCount:      APICountByToken[account.Token],
 		}
 		worker.SetRankingConfig(conf.CloudflareConfig.Ranking)
+		if conf.Unifi.Enabled {
+			worker.BlocklistListener = coordinator
+		}
 		if *onlySetup {
 			g.Go(func() error {
 				var err error
@@ -256,6 +318,22 @@ func Execute() error {
 				}
 			}
 		})
+		if conf.Unifi.Enabled {
+			g.Go(func() error {
+				ticker := time.NewTicker(conf.Unifi.UpdateFrequency)
+				defer ticker.Stop()
+				for {
+					select {
+					case <-ctx.Done():
+						return ctx.Err()
+					case <-ticker.C:
+						if err := coordinator.Sync(ctx); err != nil {
+							log.Errorf("unifi group sync failed: %s", err)
+						}
+					}
+				}
+			})
+		}
 		g.Go(func() error {
 			for {
 				// broadcast decision to each worker
