@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -18,6 +20,75 @@ import (
 
 var TotalIPListCapacity int = 10000
 
+type RankingPattern struct {
+	Name    string `yaml:"name"`
+	Pattern string `yaml:"pattern"`
+	Score   int    `yaml:"score"`
+}
+
+type RankingConfig struct {
+	Patterns             []RankingPattern `yaml:"patterns"`
+	DefaultScore         int              `yaml:"default_score"`
+	TypeScores           map[string]int   `yaml:"type_scores"`
+	DurationBonusPerHour int              `yaml:"duration_bonus_per_hour"`
+	DurationBonusMax     int              `yaml:"duration_bonus_max"`
+	OriginScores         map[string]int   `yaml:"origin_scores"`
+}
+
+func defaultRankingConfig() RankingConfig {
+	return RankingConfig{
+		Patterns: []RankingPattern{
+			{Name: "zero_day", Pattern: `(?i)(0day|zero.?day|cve-{{YEAR}})`, Score: 100},
+			{Name: "exploit", Pattern: `(?i)(exploit|rce|sqli|lfi|xxe|ssrf|webshell)`, Score: 80},
+			{Name: "brute_force", Pattern: `(?i)(bf|brute|credential|spray)`, Score: 40},
+			{Name: "scanning", Pattern: `(?i)(scan|probe|crawl|bot)`, Score: 10},
+		},
+		DefaultScore:         20,
+		TypeScores:           map[string]int{"ban": 20, "captcha": 5, "js_challenge": 5, "challenge": 5},
+		DurationBonusPerHour: 1,
+		DurationBonusMax:     20,
+		OriginScores:         map[string]int{"crowdsec": 10, "CAPI": 10, "cscli": 0, "lists": 0},
+	}
+}
+
+func expandYear(pattern string) string {
+	return strings.ReplaceAll(pattern, "{{YEAR}}", strconv.Itoa(time.Now().Year()))
+}
+
+func validateRankingConfig(ranking RankingConfig) error {
+	if ranking.DefaultScore < 0 {
+		return fmt.Errorf("ranking.default_score must be non-negative")
+	}
+	if ranking.DurationBonusPerHour < 0 {
+		return fmt.Errorf("ranking.duration_bonus_per_hour must be non-negative")
+	}
+	if ranking.DurationBonusMax < 0 {
+		return fmt.Errorf("ranking.duration_bonus_max must be non-negative")
+	}
+	for i, pattern := range ranking.Patterns {
+		if pattern.Name == "" {
+			return fmt.Errorf("ranking.patterns[%d].name is required", i)
+		}
+		if _, err := regexp.Compile(expandYear(pattern.Pattern)); err != nil {
+			return fmt.Errorf("ranking.patterns[%d].pattern: %w", i, err)
+		}
+		if pattern.Score < 0 {
+			return fmt.Errorf("ranking.patterns[%d].score must be non-negative", i)
+		}
+	}
+	for name, score := range ranking.TypeScores {
+		if score < 0 {
+			return fmt.Errorf("ranking.type_scores[%s] must be non-negative", name)
+		}
+	}
+	for name, score := range ranking.OriginScores {
+		if score < 0 {
+			return fmt.Errorf("ranking.origin_scores[%s] must be non-negative", name)
+		}
+	}
+	return nil
+}
+
 type ZoneConfig struct {
 	ID        string              `yaml:"zone_id"`
 	Actions   []string            `yaml:"actions,omitempty"`
@@ -28,12 +99,15 @@ type AccountConfig struct {
 	ZoneConfigs         []ZoneConfig `yaml:"zones"`
 	Token               string       `yaml:"token"`
 	IPListPrefix        string       `yaml:"ip_list_prefix"`
+	IPListName          string       `yaml:"ip_list_name"`
 	DefaultAction       string       `yaml:"default_action"`
 	TotalIPListCapacity *int         `yaml:"total_ip_list_capacity"`
 }
 type CloudflareConfig struct {
-	Accounts        []AccountConfig `yaml:"accounts"`
-	UpdateFrequency time.Duration   `yaml:"update_frequency"`
+	Accounts            []AccountConfig `yaml:"accounts"`
+	UpdateFrequency     time.Duration   `yaml:"update_frequency"`
+	FullResyncFrequency time.Duration   `yaml:"full_resync_frequency"`
+	Ranking             RankingConfig   `yaml:"ranking"`
 }
 type PrometheusConfig struct {
 	Enabled       bool   `yaml:"enabled"`
@@ -69,7 +143,13 @@ func MergedConfig(configPath string) ([]byte, error) {
 
 // NewConfig creates bouncerConfig from the file at provided path
 func NewConfig(reader io.Reader) (*bouncerConfig, error) {
-	config := &bouncerConfig{}
+	config := &bouncerConfig{
+		CloudflareConfig: CloudflareConfig{
+			UpdateFrequency:     5 * time.Minute,
+			FullResyncFrequency: 168 * time.Hour,
+			Ranking:             defaultRankingConfig(),
+		},
+	}
 
 	content, err := io.ReadAll(reader)
 	if err != nil {
@@ -81,6 +161,23 @@ func NewConfig(reader io.Reader) (*bouncerConfig, error) {
 	err = yaml.Unmarshal([]byte(configBuff), &config)
 	if err != nil {
 		return nil, fmt.Errorf("failed to unmarshal: %w", err)
+	}
+
+	if len(config.CloudflareConfig.Ranking.Patterns) == 0 {
+		config.CloudflareConfig.Ranking.Patterns = defaultRankingConfig().Patterns
+		log.Warn("ranking.patterns is empty, using defaults")
+	}
+	for i := range config.CloudflareConfig.Ranking.Patterns {
+		config.CloudflareConfig.Ranking.Patterns[i].Pattern = expandYear(config.CloudflareConfig.Ranking.Patterns[i].Pattern)
+	}
+	if config.CloudflareConfig.UpdateFrequency <= 0 {
+		return nil, fmt.Errorf("cloudflare_config.update_frequency must be positive")
+	}
+	if config.CloudflareConfig.FullResyncFrequency <= 0 {
+		return nil, fmt.Errorf("cloudflare_config.full_resync_frequency must be positive")
+	}
+	if err := validateRankingConfig(config.CloudflareConfig.Ranking); err != nil {
+		return nil, err
 	}
 
 	if err = config.Logging.setup("crowdsec-cloudflare-bouncer.log"); err != nil {
@@ -107,6 +204,9 @@ func NewConfig(reader io.Reader) (*bouncerConfig, error) {
 		}
 		if account.IPListPrefix == "" {
 			config.CloudflareConfig.Accounts[i].IPListPrefix = "crowdsec"
+		}
+		if account.IPListName == "" {
+			config.CloudflareConfig.Accounts[i].IPListName = config.CloudflareConfig.Accounts[i].IPListPrefix + "_block"
 		}
 
 		if len(account.DefaultAction) == 0 {
@@ -214,6 +314,7 @@ func ConfigTokens(tokens string, baseConfigPath string) (string, error) {
 				ZoneConfigs:         make([]ZoneConfig, 0),
 				Token:               token,
 				IPListPrefix:        "crowdsec",
+				IPListName:          "crowdsec_block",
 				DefaultAction:       "managed_challenge",
 				TotalIPListCapacity: &TotalIPListCapacity,
 			})
@@ -236,7 +337,12 @@ func ConfigTokens(tokens string, baseConfigPath string) (string, error) {
 			}
 		}
 	}
-	cfConfig := CloudflareConfig{Accounts: accountConfig, UpdateFrequency: time.Second * 10}
+	cfConfig := CloudflareConfig{
+		Accounts:            accountConfig,
+		UpdateFrequency:     time.Second * 10,
+		FullResyncFrequency: 168 * time.Hour,
+		Ranking:             defaultRankingConfig(),
+	}
 	baseConfig.CloudflareConfig = cfConfig
 	data, err := yaml.Marshal(baseConfig)
 	if err != nil {
