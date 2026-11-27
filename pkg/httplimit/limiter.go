@@ -44,6 +44,18 @@ func parseRetryAfter(value string) time.Duration {
 	return 0
 }
 
+func (rt *RoundTripper) extendPause(delay time.Duration) {
+	if delay > 5*time.Minute {
+		delay = 5 * time.Minute
+	}
+	until := time.Now().Add(delay)
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	if until.After(rt.pauseUntil) {
+		rt.pauseUntil = until
+	}
+}
+
 // RoundTrip waits for a token, performs the request, and records a Retry-After
 // pause for subsequent requests when the server returns 429. The rejected
 // request is returned to the caller unchanged and is never replayed.
@@ -52,7 +64,13 @@ func (rt *RoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 	pauseUntil := rt.pauseUntil
 	rt.mu.Unlock()
 	if !pauseUntil.IsZero() && time.Now().Before(pauseUntil) {
-		time.Sleep(time.Until(pauseUntil))
+		timer := time.NewTimer(time.Until(pauseUntil))
+		select {
+		case <-timer.C:
+		case <-req.Context().Done():
+			timer.Stop()
+			return nil, req.Context().Err()
+		}
 	}
 	if rt.Limiter != nil {
 		if err := rt.Limiter.Wait(req.Context()); err != nil {
@@ -66,9 +84,7 @@ func (rt *RoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 	resp, err := next.RoundTrip(req)
 	if err == nil && resp.StatusCode == http.StatusTooManyRequests {
 		if delay := parseRetryAfter(resp.Header.Get("Retry-After")); delay > 0 {
-			rt.mu.Lock()
-			rt.pauseUntil = time.Now().Add(delay)
-			rt.mu.Unlock()
+			rt.extendPause(delay)
 		}
 	}
 	return resp, err
