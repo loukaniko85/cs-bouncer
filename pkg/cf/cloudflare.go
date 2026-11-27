@@ -420,17 +420,40 @@ func (worker *CloudflareWorker) pruneExpired(now time.Time) {
 	}
 }
 
-func (worker *CloudflareWorker) publishRankedIPs(ranked []*models.Decision) {
+func (worker *CloudflareWorker) publishRankedIPs(ips []string) {
 	if worker.BlocklistListener == nil {
 		return
 	}
+	worker.BlocklistListener.Publish(worker.Account.ID, ips)
+}
+
+// RankDecisions applies the full selection pipeline used by the blocklist:
+// IP/RANGE scope filter, normalization, dedup, severity ranking and capacity.
+func RankDecisions(decisions []*models.Decision, r *rank.Ranker, capacity int, now time.Time) []string {
+	normalized := make([]*models.Decision, 0, len(decisions))
+	for _, d := range decisions {
+		if d == nil || d.Value == nil || d.Scope == nil {
+			continue
+		}
+		scope := strings.ToUpper(*d.Scope)
+		if scope != "IP" && scope != "RANGE" {
+			continue
+		}
+		copyOfDecision := *d
+		value := normalizeDecisionValue(*d.Value)
+		copyOfDecision.Value = &value
+		normalized = append(normalized, &copyOfDecision)
+	}
+	ranked := r.Rank(normalized, now)
+	if len(ranked) > capacity {
+		RankingDroppedTotal.Add(float64(len(ranked) - capacity))
+		ranked = ranked[:capacity]
+	}
 	ips := make([]string, 0, len(ranked))
 	for _, d := range ranked {
-		if d.Value != nil {
-			ips = append(ips, *d.Value)
-		}
+		ips = append(ips, *d.Value)
 	}
-	worker.BlocklistListener.Publish(worker.Account.ID, ips)
+	return ips
 }
 
 // Reconcile recomputes the desired list contents from active decisions.
@@ -451,33 +474,15 @@ func (worker *CloudflareWorker) Reconcile() error {
 		}
 	}
 
-	// Normalize before ranking and before applying the capacity limit, so
-	// equivalent values (e.g. 1.2.3.4 and 1.2.3.4/32) cannot waste slots.
-	normalized := make([]*models.Decision, 0, len(ipDecisions))
-	for _, d := range ipDecisions {
-		if d.Value == nil {
-			continue
-		}
-		copyOfDecision := *d
-		value := normalizeDecisionValue(*d.Value)
-		copyOfDecision.Value = &value
-		normalized = append(normalized, &copyOfDecision)
-	}
-	ranked := worker.Ranker.Rank(normalized, now)
 	capacity := cfg.TotalIPListCapacity
 	if worker.Account.TotalIPListCapacity != nil {
 		capacity = *worker.Account.TotalIPListCapacity
 	}
-	if len(ranked) > capacity {
-		RankingDroppedTotal.Add(float64(len(ranked) - capacity))
-		ranked = ranked[:capacity]
-	}
+	values := RankDecisions(ipDecisions, worker.Ranker, capacity, now)
+	worker.publishRankedIPs(values)
 
-	worker.publishRankedIPs(ranked)
-
-	newSet := make(map[string]IPSetItem, len(ranked))
-	for _, d := range ranked {
-		value := *d.Value
+	newSet := make(map[string]IPSetItem, len(values))
+	for _, value := range values {
 		if old, ok := worker.IPListState.IPSet[value]; ok {
 			newSet[value] = old
 		} else {

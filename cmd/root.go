@@ -28,6 +28,7 @@ import (
 
 	"github.com/crowdsecurity/cs-cloudflare-bouncer/pkg/cf"
 	"github.com/crowdsecurity/cs-cloudflare-bouncer/pkg/cfg"
+	"github.com/crowdsecurity/cs-cloudflare-bouncer/pkg/rank"
 	"github.com/crowdsecurity/cs-cloudflare-bouncer/pkg/unifi"
 )
 
@@ -140,6 +141,7 @@ func Execute() error {
 	ver := flag.Bool("version", false, "Display version information and exit")
 	logAPIRequests := flag.Bool("lc", false, "logs API requests")
 	testConfig := flag.Bool("t", false, "test config and exit")
+	dump := flag.Bool("dump", false, "print the ranked blocklist and exit")
 	showConfig := flag.Bool("T", false, "show full config (.yaml + .yaml.local) and exit")
 
 	flag.Parse()
@@ -196,6 +198,52 @@ func Execute() error {
 	APILogger, err := newAPILogger(conf.Logging.LogDir, logAPIRequests)
 	if err != nil {
 		return err
+	}
+
+	if *dump {
+		ctx := context.Background()
+		opts := apiclient.DecisionsStreamOpts{
+			Startup:                true,
+			Scopes:                 "ip,range,as,country",
+			ScenariosNotContaining: strings.Join(conf.ExcludeScenariosContaining, ","),
+			ScenariosContaining:    strings.Join(conf.IncludeScenariosContaining, ","),
+			Origins:                strings.Join(conf.OnlyIncludeDecisionsFrom, ","),
+		}
+		bouncer := &csbouncer.StreamBouncer{
+			APIKey:             conf.CrowdSecLAPIKey,
+			APIUrl:             conf.CrowdSecLAPIUrl,
+			UserAgent:          fmt.Sprintf("%s/%s", name, version.String()),
+			Opts:               opts,
+			CertPath:           conf.CertPath,
+			KeyPath:            conf.KeyPath,
+			CAPath:             conf.CAPath,
+			InsecureSkipVerify: &conf.CrowdSecInsecureSkipVerify,
+		}
+		if err := bouncer.Init(); err != nil {
+			return err
+		}
+		stream, resp, err := bouncer.APIClient.Decisions.GetStream(ctx, opts)
+		if resp != nil && resp.Response != nil {
+			resp.Response.Body.Close()
+		}
+		if err != nil {
+			return err
+		}
+		ranker, err := rank.New(conf.CloudflareConfig.Ranking)
+		if err != nil {
+			return err
+		}
+		capacity := 0
+		for _, account := range conf.CloudflareConfig.Accounts {
+			if account.TotalIPListCapacity != nil && *account.TotalIPListCapacity > capacity {
+				capacity = *account.TotalIPListCapacity
+			}
+		}
+		if capacity == 0 {
+			capacity = cfg.TotalIPListCapacity
+		}
+		fmt.Println(strings.Join(cf.RankDecisions(stream.New, ranker, capacity, time.Now()), "\n"))
+		return nil
 	}
 
 	var csLAPI *csbouncer.StreamBouncer

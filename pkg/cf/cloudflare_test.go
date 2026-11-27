@@ -313,6 +313,37 @@ func (r *recordingListener) Publish(account string, ips []string) {
 	r.ips = append(r.ips, ips)
 }
 
+func TestRankDecisionsMatchesReconcile(t *testing.T) {
+	api := &mockCloudflareAPI{
+		IPLists:     []cloudflare.IPList{{ID: "11", Name: "wafblocklist"}},
+		IPListItems: make(map[string][]cloudflare.IPListItem),
+		ZoneList:    []cloudflare.Zone{{ID: "zone1"}},
+	}
+	w := newTestWorker(t, api, testAccount())
+	require.NoError(t, w.Init())
+	require.NoError(t, w.SetUpCloudflareResources())
+	until := time.Now().Add(4 * time.Hour)
+	simulated := newDecision("0day-exploit", "ban", "7.7.7.7", "ip", until)
+	simulated.Simulated = ptr.Of(true)
+	decisions := []*models.Decision{
+		newDecision("0day-exploit", "ban", "1.1.1.1", "ip", until),
+		newDecision("http-scan", "ban", "2.2.2.2/32", "ip", until),
+		newDecision("http-scan", "ban", "2001:db8::/64", "ip", until),
+		newDecision("ssh-bf", "ban", "US", "country", until),
+		simulated,
+	}
+	got := RankDecisions(decisions, w.Ranker, 10000, time.Now())
+	require.Equal(t, []string{"1.1.1.1", "2.2.2.2", "2001:db8::/64"}, got)
+
+	w.ApplyFullSnapshot(&models.DecisionsStreamResponse{New: decisions})
+	require.NoError(t, w.Reconcile())
+	keys := make([]string, 0, len(w.IPListState.IPSet))
+	for key := range w.IPListState.IPSet {
+		keys = append(keys, key)
+	}
+	require.ElementsMatch(t, got, keys)
+}
+
 func TestGetAPIIsNonBlocking(t *testing.T) {
 	api := &mockCloudflareAPI{IPListItems: make(map[string][]cloudflare.IPListItem)}
 	w := newTestWorker(t, api, testAccount())
