@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
@@ -145,9 +146,10 @@ func New(config cfg.UnifiConfig) *Client {
 	}
 	return &Client{
 		config: config,
-		http: &http.Client{Transport: &httplimit.RoundTripper{
-			Next:    transport,
-			Limiter: httplimit.Default.Limiter,
+		http: &http.Client{Timeout: 30 * time.Second, Transport: &httplimit.RoundTripper{
+			Next:  transport,
+			Rate:  httplimit.DefaultRate,
+			Burst: httplimit.DefaultBurst,
 		}},
 	}
 }

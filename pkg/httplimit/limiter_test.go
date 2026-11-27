@@ -7,13 +7,12 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
-	"golang.org/x/time/rate"
 )
 
 func TestRoundTripperLimits(t *testing.T) {
 	transport := &RoundTripper{
 		Next:    roundTripperFunc(func(r *http.Request) (*http.Response, error) { return &http.Response{StatusCode: 200}, nil }),
-		Limiter: rate.NewLimiter(4, 4),
+		Rate: 4, Burst: 4,
 	}
 	client := &http.Client{Transport: transport}
 	start := time.Now()
@@ -44,7 +43,7 @@ func TestRoundTripperRetryAfter(t *testing.T) {
 			}
 			return &http.Response{StatusCode: 200}, nil
 		}),
-		Limiter: rate.NewLimiter(100, 100),
+		Rate: 100, Burst: 100,
 	}
 	client := &http.Client{Transport: transport}
 	req, err := http.NewRequest(http.MethodGet, "http://example.test", nil)
@@ -63,14 +62,32 @@ func TestRoundTripperRetryAfter(t *testing.T) {
 }
 
 func TestRetryAfterPauseIsMonotonic(t *testing.T) {
-	rt := &RoundTripper{}
-	rt.extendPause(2 * time.Second)
-	first := rt.pauseUntil
-	rt.extendPause(time.Second)
-	require.Equal(t, first, rt.pauseUntil, "a shorter Retry-After must not cut an existing pause")
+	state := &hostState{}
+	state.extendPause(2 * time.Second)
+	first := state.pauseUntil
+	state.extendPause(time.Second)
+	require.Equal(t, first, state.pauseUntil, "a shorter Retry-After must not cut an existing pause")
 
-	rt.extendPause(10 * time.Minute)
-	require.LessOrEqual(t, rt.pauseUntil.Sub(time.Now()), 5*time.Minute, "pause must be capped")
+	state.extendPause(10 * time.Minute)
+	require.Greater(t, state.pauseUntil.Sub(time.Now()), 9*time.Minute, "the full advertised delay must be honored")
+}
+
+func TestPerHostLimitersAreIndependent(t *testing.T) {
+	transport := &RoundTripper{
+		Next:  roundTripperFunc(func(r *http.Request) (*http.Response, error) { return &http.Response{StatusCode: 200}, nil }),
+		Rate:  1,
+		Burst: 1,
+	}
+	client := &http.Client{Transport: transport}
+	start := time.Now()
+	for _, host := range []string{"http://one.test", "http://two.test"} {
+		req, err := http.NewRequest(http.MethodGet, host, nil)
+		require.NoError(t, err)
+		resp, err := client.Do(req)
+		require.NoError(t, err)
+		resp.Body.Close()
+	}
+	require.Less(t, time.Since(start), 500*time.Millisecond)
 }
 
 func TestRetryAfterRespectsCancellation(t *testing.T) {
@@ -80,7 +97,7 @@ func TestRetryAfterRespectsCancellation(t *testing.T) {
 			calls++
 			return &http.Response{StatusCode: 429, Header: http.Header{"Retry-After": []string{"2"}}}, nil
 		}),
-		Limiter: rate.NewLimiter(100, 100),
+		Rate: 100, Burst: 100,
 	}
 	client := &http.Client{Transport: transport}
 	ctx, cancel := context.WithCancel(context.Background())

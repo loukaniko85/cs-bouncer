@@ -139,7 +139,11 @@ func (worker *CloudflareWorker) replaceListItems(set map[string]IPSetItem) error
 		case "failed":
 			return fmt.Errorf("failed during polling got error %s", res.Error)
 		case "pending", "running":
-			time.Sleep(time.Second)
+			select {
+			case <-worker.Ctx.Done():
+				return worker.Ctx.Err()
+			case <-time.After(time.Second):
+			}
 		case "completed":
 			worker.IPListState.IPSet = set
 			worker.IPListState.IPList.NumItems = len(set)

@@ -84,9 +84,11 @@ func (lrt InterceptLogger) RoundTrip(req *http.Request) (*http.Response, error) 
 
 func NewCloudflareClient(token string, logger *log.Logger) (*cloudflare.API, error) {
 	httpClient := &http.Client{
+		Timeout: 30 * time.Second,
 		Transport: &httplimit.RoundTripper{
-			Next:    InterceptLogger{Tripper: http.DefaultTransport, logger: logger},
-			Limiter: httplimit.Default.Limiter,
+			Next:  InterceptLogger{Tripper: http.DefaultTransport, logger: logger},
+			Rate:  httplimit.DefaultRate,
+			Burst: httplimit.DefaultBurst,
 		},
 	}
 	return cloudflare.NewWithAPIToken(token, cloudflare.HTTPClient(httpClient))
