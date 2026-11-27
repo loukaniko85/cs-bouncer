@@ -40,6 +40,7 @@ type blocklistCoordinator struct {
 	mu        sync.Mutex
 	byAccount map[string][]string
 	order     []string
+	expected  []string
 	published bool
 	client    groupSyncer
 }
@@ -80,6 +81,15 @@ func (c *blocklistCoordinator) Sync(ctx context.Context) error {
 	}
 	c.mu.Lock()
 	ready := c.published
+	if len(c.expected) > 0 {
+		ready = true
+		for _, accountID := range c.expected {
+			if _, ok := c.byAccount[accountID]; !ok {
+				ready = false
+				break
+			}
+		}
+	}
 	c.mu.Unlock()
 	if !ready {
 		return nil
@@ -250,8 +260,13 @@ func Execute() error {
 	g, ctx := errgroup.WithContext(context.Background())
 	var coordinator *blocklistCoordinator
 	if conf.Unifi.Enabled {
+		accountIDs := make([]string, 0, len(conf.CloudflareConfig.Accounts))
+		for _, account := range conf.CloudflareConfig.Accounts {
+			accountIDs = append(accountIDs, account.ID)
+		}
 		coordinator = &blocklistCoordinator{
 			byAccount: make(map[string][]string),
+			expected:  accountIDs,
 			client:    unifi.New(conf.Unifi),
 		}
 	}

@@ -28,6 +28,18 @@ func TestCoordinatorUsesPublishOrder(t *testing.T) {
 	require.Equal(t, []string{"9.9.9.9", "1.1.1.1"}, c.snapshot())
 }
 
+func TestCoordinatorRequiresAllAccountsBeforeFirstSync(t *testing.T) {
+	fake := &fakeSyncer{}
+	c := &blocklistCoordinator{client: fake, expected: []string{"a", "b"}}
+	c.Publish("a", []string{"1.1.1.1"})
+	require.NoError(t, c.Sync(context.Background()))
+	require.Zero(t, fake.calls)
+
+	c.Publish("b", []string{"2.2.2.2"})
+	require.NoError(t, c.Sync(context.Background()))
+	require.Equal(t, 1, fake.calls)
+}
+
 func TestCoordinatorSkipsSyncBeforeFirstPublish(t *testing.T) {
 	fake := &fakeSyncer{}
 	c := &blocklistCoordinator{client: fake}
