@@ -32,9 +32,9 @@ jobs:
               test -z "$(gofmt -l .)" &&
               go vet ./... &&
               go test ./... &&
-              go install golang.org/x/vuln/cmd/govulncheck@latest &&
+              go install golang.org/x/vuln/cmd/govulncheck@v1.10.0 &&
               govulncheck ./...
-            ' 
+            '
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3

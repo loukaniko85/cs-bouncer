@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -17,6 +19,8 @@ import (
 
 	"github.com/crowdsecurity/go-cs-lib/csstring"
 	"github.com/crowdsecurity/go-cs-lib/yamlpatch"
+
+	"github.com/crowdsecurity/cs-cloudflare-bouncer/pkg/httplimit"
 )
 
 var TotalIPListCapacity int = 10000
@@ -148,8 +152,17 @@ func validateUnifiConfig(c UnifiConfig) error {
 	if c.Mode != "local" && c.Mode != "cloud" {
 		return fmt.Errorf("unifi.mode must be local or cloud")
 	}
-	if c.Mode == "local" && c.URL == "" {
-		return fmt.Errorf("unifi.url is required when unifi.mode is local")
+	if c.Site == "" {
+		return fmt.Errorf("unifi.site is required when unifi is enabled")
+	}
+	if c.ListName == "" {
+		return fmt.Errorf("unifi.list_name is required when unifi is enabled")
+	}
+	if c.Mode == "local" {
+		parsed, err := url.Parse(c.URL)
+		if err != nil || parsed.Host == "" || (parsed.Scheme != "https" && parsed.Scheme != "http") {
+			return fmt.Errorf("unifi.url must be an http(s) URL when unifi.mode is local")
+		}
 	}
 	if c.Mode == "cloud" && c.ConsoleID == "" {
 		return fmt.Errorf("unifi.console_id is required when unifi.mode is cloud")
@@ -212,7 +225,7 @@ func RedactSecrets(content []byte) []byte {
 		if node.Kind == yaml.MappingNode {
 			for i := 0; i+1 < len(node.Content); i += 2 {
 				key, value := node.Content[i], node.Content[i+1]
-				if sensitive[key.Value] {
+				if sensitive[key.Value] && !strings.HasPrefix(value.Value, "${") {
 					value.Kind = yaml.ScalarNode
 					value.Tag = "!!str"
 					value.Value = "***REDACTED***"
@@ -332,12 +345,18 @@ func NewConfig(reader io.Reader) (*bouncerConfig, error) {
 	}
 
 	configBuff := csstring.StrictExpand(string(content), os.LookupEnv)
-	if start := strings.Index(configBuff, "${"); start >= 0 {
-		if end := strings.Index(configBuff[start+2:], "}"); end >= 0 {
-			name := configBuff[start+2 : start+2+end]
-			return nil, fmt.Errorf("config contains unresolved environment variable %s", name)
+	for _, line := range strings.Split(configBuff, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "#") {
+			continue
 		}
-		return nil, fmt.Errorf("config contains an unresolved environment variable placeholder")
+		if start := strings.Index(line, "${"); start >= 0 {
+			if end := strings.Index(line[start+2:], "}"); end >= 0 {
+				name := line[start+2 : start+2+end]
+				return nil, fmt.Errorf("config contains unresolved environment variable %s", name)
+			}
+			return nil, fmt.Errorf("config contains an unresolved environment variable placeholder")
+		}
 	}
 
 	decoder := yaml.NewDecoder(strings.NewReader(configBuff))
@@ -486,6 +505,17 @@ func lineComment(l string, zoneByID map[string]cloudflare.Zone, accountByID map[
 	return ""
 }
 
+func generatedCloudflareConfig(accounts []AccountConfig) CloudflareConfig {
+	return CloudflareConfig{
+		Accounts:            accounts,
+		UpdateFrequency:     10 * time.Second,
+		FullResyncFrequency: 168 * time.Hour,
+		Ranking:             defaultRankingConfig(),
+		MaxCountryDecisions: 200,
+		MaxASDecisions:      200,
+	}
+}
+
 func ConfigTokens(tokens string, baseConfigPath string) (string, error) {
 	baseConfig := &bouncerConfig{}
 	hasBaseConfig := true
@@ -506,9 +536,17 @@ func ConfigTokens(tokens string, baseConfigPath string) (string, error) {
 	accountConfig := make([]AccountConfig, 0)
 	zoneByID := make(map[string]cloudflare.Zone)
 	accountByID := make(map[string]cloudflare.Account)
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	httpClient := &http.Client{
+		Timeout: 30 * time.Second,
+		Transport: &httplimit.RoundTripper{
+			Rate:  httplimit.DefaultRate,
+			Burst: httplimit.DefaultBurst,
+		},
+	}
 	for _, token := range strings.Split(tokens, ",") {
-		api, err := cloudflare.NewWithAPIToken(token)
+		api, err := cloudflare.NewWithAPIToken(token, cloudflare.HTTPClient(httpClient))
 		if err != nil {
 			return "", err
 		}
@@ -545,12 +583,7 @@ func ConfigTokens(tokens string, baseConfigPath string) (string, error) {
 			}
 		}
 	}
-	cfConfig := CloudflareConfig{
-		Accounts:            accountConfig,
-		UpdateFrequency:     time.Second * 10,
-		FullResyncFrequency: 168 * time.Hour,
-		Ranking:             defaultRankingConfig(),
-	}
+	cfConfig := generatedCloudflareConfig(accountConfig)
 	baseConfig.CloudflareConfig = cfConfig
 	data, err := yaml.Marshal(baseConfig)
 	if err != nil {

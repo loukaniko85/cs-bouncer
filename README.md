@@ -82,7 +82,7 @@ run prints the pushed image digest in its job summary. For production, pin that
 digest instead:
 
 ```yaml
-image: ghcr.io/loukaniko85/cs-cloudflare-bouncer@<full digest from workflow summary>
+image: ghcr.io/loukaniko85/cs-bouncer@<full digest from workflow summary>
 ```
 
 ## Migration notes
@@ -93,7 +93,7 @@ CrowdSec rules are managed in each zone's `http_request_firewall_custom`
 entry-point ruleset and are identified by the `CrowdSec ` description prefix —
 other rules in that ruleset are preserved.
 
-Cloudflare limits lists that look CrowdSec-managed (name `crowdsec_*` or "IP list by crowdsec" description) to **one bulk item update every 24 hours**. The bouncer uses a neutral list name so frequent updates work; on startup it removes the legacy `crowdsec_block` list and its rules and creates the replacement automatically.
+Cloudflare limits lists that look CrowdSec-managed (name `crowdsec_*` or "IP list by crowdsec" description) to **one bulk item update every 24 hours**. The bouncer uses a neutral list name so frequent updates work. If a legacy `crowdsec_block` list is found under a different configured name, startup fails with manual migration instructions rather than deleting enforcement before a replacement exists.
 
 Required Cloudflare token permissions: Zone WAF Read/Write, Account Rulesets Read/Write (or Account WAF Read/Write), and Account Filter Lists Edit.
 Legacy Firewall Rules/Filters created by older versions

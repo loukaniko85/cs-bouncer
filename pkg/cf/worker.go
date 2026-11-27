@@ -41,6 +41,7 @@ type CloudflareWorker struct {
 	EffectiveCapacity   int
 	MaxCountryDecisions int
 	MaxASDecisions      int
+	CAFile              string
 	lastStateSave       time.Time
 	rankingConfig       cfg.RankingConfig
 	Ctx                 context.Context
@@ -56,11 +57,34 @@ type CloudflareWorker struct {
 
 // this is useful for testing allowing us to mock it.
 
+func normalizedDecisionValue(d *models.Decision) (string, error) {
+	if d == nil || d.Value == nil || d.Scope == nil {
+		return "", fmt.Errorf("decision is missing value or scope")
+	}
+	switch strings.ToUpper(*d.Scope) {
+	case "IP", "RANGE":
+		return normalizeDecisionValue(*d.Value)
+	case "COUNTRY":
+		value := strings.ToUpper(*d.Value)
+		if !validCountry(value) {
+			return "", fmt.Errorf("invalid country %q", *d.Value)
+		}
+		return value, nil
+	case "AS":
+		if !validASN(*d.Value) {
+			return "", fmt.Errorf("invalid ASN %q", *d.Value)
+		}
+		return *d.Value, nil
+	default:
+		return "", fmt.Errorf("unsupported scope %q", *d.Scope)
+	}
+}
+
 func (worker *CloudflareWorker) addDecision(d *models.Decision) {
 	if d == nil || d.Value == nil || (d.Simulated != nil && *d.Simulated) {
 		return
 	}
-	value, err := normalizeDecisionValue(*d.Value)
+	value, err := normalizedDecisionValue(d)
 	if err != nil {
 		if worker.Logger != nil {
 			worker.Logger.Debugf("ignoring malformed decision value %q: %s", *d.Value, err)
@@ -77,7 +101,7 @@ func (worker *CloudflareWorker) removeDecision(d *models.Decision) {
 	if d == nil || d.Value == nil {
 		return
 	}
-	value, err := normalizeDecisionValue(*d.Value)
+	value, err := normalizedDecisionValue(d)
 	if err != nil {
 		return
 	}
@@ -153,7 +177,7 @@ func (worker *CloudflareWorker) ApplyFullSnapshot(s *models.DecisionsStreamRespo
 func (worker *CloudflareWorker) Init() error {
 	worker.Logger = log.WithFields(log.Fields{"account_id": worker.Account.ID})
 	if worker.API == nil {
-		api, err := NewCloudflareClient(worker.Account.Token, worker.APILogger)
+		api, err := NewCloudflareClient(worker.Account.Token, worker.APILogger, worker.CAFile)
 		if err != nil {
 			return err
 		}

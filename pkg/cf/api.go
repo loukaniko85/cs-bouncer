@@ -3,6 +3,9 @@ package cf
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
+	"fmt"
 	"github.com/cloudflare/cloudflare-go"
 	"github.com/crowdsecurity/cs-cloudflare-bouncer/pkg/httplimit"
 	"github.com/prometheus/client_golang/prometheus"
@@ -10,6 +13,7 @@ import (
 	log "github.com/sirupsen/logrus"
 	"io"
 	"net/http"
+	"os"
 	"time"
 )
 
@@ -82,11 +86,35 @@ func (lrt InterceptLogger) RoundTrip(req *http.Request) (*http.Response, error) 
 	return res, err
 }
 
-func NewCloudflareClient(token string, logger *log.Logger) (*cloudflare.API, error) {
+func transportWithCA(caFile string) (*http.Transport, error) {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	if caFile == "" {
+		return transport, nil
+	}
+	pem, err := os.ReadFile(caFile)
+	if err != nil {
+		return nil, fmt.Errorf("cloudflare ca_file: %w", err)
+	}
+	pool, err := x509.SystemCertPool()
+	if err != nil || pool == nil {
+		pool = x509.NewCertPool()
+	}
+	if !pool.AppendCertsFromPEM(pem) {
+		return nil, fmt.Errorf("cloudflare ca_file contains no valid certificates")
+	}
+	transport.TLSClientConfig = &tls.Config{RootCAs: pool}
+	return transport, nil
+}
+
+func NewCloudflareClient(token string, logger *log.Logger, caFile string) (*cloudflare.API, error) {
+	transport, err := transportWithCA(caFile)
+	if err != nil {
+		return nil, err
+	}
 	httpClient := &http.Client{
 		Timeout: 30 * time.Second,
 		Transport: &httplimit.RoundTripper{
-			Next:  InterceptLogger{Tripper: http.DefaultTransport, logger: logger},
+			Next:  InterceptLogger{Tripper: transport, logger: logger},
 			Rate:  httplimit.DefaultRate,
 			Burst: httplimit.DefaultBurst,
 		},

@@ -54,7 +54,9 @@ func (c *blocklistCoordinator) Publish(accountID string, ips []string) {
 		c.byAccount = make(map[string][]string)
 	}
 	if _, seen := c.byAccount[accountID]; !seen {
-		c.order = append(c.order, accountID)
+		if len(c.expected) == 0 {
+			c.order = append(c.order, accountID)
+		}
 	}
 	c.byAccount[accountID] = append([]string(nil), ips...)
 	c.published = true
@@ -212,7 +214,8 @@ func Execute() error {
 	}
 
 	if *dump {
-		ctx := context.Background()
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
 		opts := apiclient.DecisionsStreamOpts{
 			Startup:                true,
 			Scopes:                 "ip,range,as,country",
@@ -274,6 +277,7 @@ func Execute() error {
 		}
 		coordinator = &blocklistCoordinator{
 			byAccount: make(map[string][]string),
+			order:     accountIDs,
 			expected:  accountIDs,
 			client:    client,
 		}
@@ -296,6 +300,7 @@ func Execute() error {
 			CFStateByAction:     make(map[string]*cf.CloudflareState),
 			MaxCountryDecisions: conf.CloudflareConfig.MaxCountryDecisions,
 			MaxASDecisions:      conf.CloudflareConfig.MaxASDecisions,
+			CAFile:              conf.CloudflareConfig.CAFile,
 		}
 		worker.SetRankingConfig(conf.CloudflareConfig.Ranking)
 		if conf.StateFile != "" {

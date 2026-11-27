@@ -4,7 +4,7 @@ crowdsec_lapi_key: ${API_KEY}
 # Optional persisted decision state (one file per account, {account} is replaced).
 state_file: # /var/lib/cs-cloudflare-bouncer/state_{account}.json
 # Secrets may also be read from files: crowdsec_lapi_key_file,
-# account token_file, unifi.password_file (never set both inline and _file).
+# account token_file, unifi.api_key_file (never set both inline and _file).
 crowdsec_update_frequency: 10s
 
 include_scenarios_containing: [] # ignore IPs banned for triggering scenarios not containing either of provided word EG ["http"]
@@ -14,15 +14,15 @@ only_include_decisions_from: [] #  only include IPs banned due to decisions orgi
 #Cloudflare Config. 
 cloudflare_config:
   accounts: 
-  - id: 
-    token: 
+  - id: ${CF_ACC_ID}
+    token: ${CF_TOKEN}
     ip_list_prefix: crowdsec
     ip_list_name: wafblocklist # neutral name: Cloudflare limits *CrowdSec-named* lists to one bulk update per 24h
     default_action: managed_challenge
     zones:
     - actions: 
       - managed_challenge # valid choices are either of managed_challenge, js_challenge, block
-      zone_id:
+      zone_id: ${CF_ZONE_ID}
     
 
   update_frequency: 5m # how often to reconcile the IP list with the most relevant decisions
@@ -63,7 +63,7 @@ unifi:
   mode: local # local UniFi OS console, or cloud connector
   url: https://10.0.24.1
   console_id: # required only for mode: cloud
-  api_key: ${UNIFI_API_KEY}
+  # api_key: ${UNIFI_API_KEY}
   # api_key_file: /run/secrets/unifi_api_key
   site: default
   list_name: CrowdSec_Blocklist

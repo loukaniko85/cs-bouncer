@@ -270,16 +270,29 @@ func (worker *CloudflareWorker) Reconcile() error {
 	return nil
 }
 
+const isoCountryCodes = `AD AE AF AG AI AL AM AO AQ AR AS AT AU AW AX AZ BA BB BD BE BF BG BH BI BJ BL BM BN BO BQ BR BS BT BV BW BY BZ CA CC CD CF CG CH CI CK CL CM CN CO CR CU CV CW CX CY CZ DE DJ DK DM DO DZ EC EE EG EH ER ES ET FI FJ FK FM FO FR GA GB GD GE GF GG GH GI GL GM GN GP GQ GR GS GT GU GW GY HK HM HN HR HT HU ID IE IL IM IN IO IQ IR IS IT JE JM JO JP KE KG KH KI KM KN KP KR KW KY KZ LA LB LC LI LK LR LS LT LU LV LY MA MC MD ME MF MG MH MK ML MM MN MO MP MQ MR MS MT MU MV MW MX MY MZ NA NC NE NF NG NI NL NO NP NR NU NZ OM PA PE PF PG PH PK PL PM PN PR PS PT PW PY QA RE RO RS RU RW SA SB SC SD SE SG SH SI SJ SK SL SM SN SO SR SS ST SV SX SY SZ TC TD TF TG TH TJ TK TL TM TN TO TR TT TV TW TZ UA UG UM US UY UZ VA VC VE VG VI VN VU WF WS YE YT ZA ZM ZW`
+
 func validCountry(value string) bool {
-	if len(value) != 2 {
-		return false
-	}
-	return value[0] >= 'A' && value[0] <= 'Z' && value[1] >= 'A' && value[1] <= 'Z'
+	return len(value) == 2 && strings.Contains(" "+isoCountryCodes+" ", " "+value+" ")
 }
 
 func validASN(value string) bool {
 	_, err := strconv.ParseUint(value, 10, 32)
 	return err == nil
+}
+
+func (worker *CloudflareWorker) scopedDecisionBetter(candidate, current *models.Decision, now time.Time) bool {
+	candidateScore, currentScore := worker.Ranker.Score(candidate, now), worker.Ranker.Score(current, now)
+	if candidateScore != currentScore {
+		return candidateScore > currentScore
+	}
+	candidateStart, currentStart := worker.Ranker.StartTime(candidate), worker.Ranker.StartTime(current)
+	if !candidateStart.Equal(currentStart) {
+		return candidateStart.After(currentStart)
+	}
+	candidateBan := candidate.Type != nil && *candidate.Type == "ban"
+	currentBan := current.Type != nil && *current.Type == "ban"
+	return candidateBan && !currentBan
 }
 
 func (worker *CloudflareWorker) rankedScopedValues(values map[string]*models.Decision, limit int) []string {
@@ -334,7 +347,9 @@ func (worker *CloudflareWorker) refreshScopedSets() {
 				if countries[action] == nil {
 					countries[action] = make(map[string]*models.Decision)
 				}
-				countries[action][value] = d
+				if current := countries[action][value]; current == nil || worker.scopedDecisionBetter(d, current, time.Now()) {
+					countries[action][value] = d
+				}
 			case "AS":
 				if !validASN(*d.Value) {
 					continue
@@ -342,7 +357,9 @@ func (worker *CloudflareWorker) refreshScopedSets() {
 				if asns[action] == nil {
 					asns[action] = make(map[string]*models.Decision)
 				}
-				asns[action][*d.Value] = d
+				if current := asns[action][*d.Value]; current == nil || worker.scopedDecisionBetter(d, current, time.Now()) {
+					asns[action][*d.Value] = d
+				}
 			}
 		}
 	}

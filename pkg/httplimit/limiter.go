@@ -21,9 +21,9 @@ const (
 var Default = &RoundTripper{Rate: DefaultRate, Burst: DefaultBurst}
 
 type hostState struct {
-	limiter     *rate.Limiter
-	mu          sync.Mutex
-	pauseUntil  time.Time
+	limiter    *rate.Limiter
+	mu         sync.Mutex
+	pauseUntil time.Time
 }
 
 // RoundTripper wraps a transport with per-host token buckets and Retry-After pauses.

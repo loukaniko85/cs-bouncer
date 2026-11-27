@@ -1,7 +1,7 @@
 Name:      crowdsec-cloudflare-bouncer
 Version:   %(echo $VERSION)
 Release:   %(echo $PACKAGE_NUMBER)%{?dist}
-Summary:   CrowdSec bouncer for Cloudflare and UniFi 
+Summary:   CrowdSec bouncer for Cloudflare and UniFi
 
 License:   MIT
 URL:       https://crowdsec.net

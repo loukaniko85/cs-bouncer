@@ -16,7 +16,7 @@ gen_apikey() {
         bouncer_id="$BOUNCER_PREFIX-$(date +%s)"
         API_KEY=$(cscli -oraw bouncers add "$bouncer_id")
         echo "$bouncer_id" > "$CONFIG.id"
-        msg info "API Key: $API_KEY"
+        msg info "API key stored in $CONFIG"
         READY="yes"
     else
         msg warn "cscli not found, you will need to generate an api key."

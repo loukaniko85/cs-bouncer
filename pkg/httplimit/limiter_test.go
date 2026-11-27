@@ -11,7 +11,7 @@ import (
 
 func TestRoundTripperLimits(t *testing.T) {
 	transport := &RoundTripper{
-		Next:    roundTripperFunc(func(r *http.Request) (*http.Response, error) { return &http.Response{StatusCode: 200}, nil }),
+		Next: roundTripperFunc(func(r *http.Request) (*http.Response, error) { return &http.Response{StatusCode: 200}, nil }),
 		Rate: 4, Burst: 4,
 	}
 	client := &http.Client{Transport: transport}

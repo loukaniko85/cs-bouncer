@@ -2,8 +2,11 @@ package cf
 
 import (
 	"context"
+	"encoding/pem"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -256,6 +259,7 @@ func TestScopedDecisionsValidatedAndCapped(t *testing.T) {
 	until := time.Now().Add(time.Hour)
 	w.ActiveDecisions["US"] = map[string]*models.Decision{"us": newDecision("ssh-bf", "ban", "US", "country", until)}
 	w.ActiveDecisions["GB"] = map[string]*models.Decision{"gb": newDecision("http-scan", "ban", "GB", "country", until)}
+	w.ActiveDecisions["ZZ"] = map[string]*models.Decision{"zz": newDecision("ssh-bf", "ban", "ZZ", "country", until)}
 	w.ActiveDecisions["1234"] = map[string]*models.Decision{"as": newDecision("ssh-bf", "ban", "1234", "as", until)}
 	w.ActiveDecisions["bad"] = map[string]*models.Decision{"bad": newDecision("ssh-bf", "ban", "not-an-asn", "as", until)}
 	require.NoError(t, w.Reconcile())
@@ -432,6 +436,29 @@ func TestLoadStateSkipsNullDecisions(t *testing.T) {
 	require.Empty(t, loaded)
 }
 
+func TestScopedDecisionsFromSnapshotReachRules(t *testing.T) {
+	api := &mockCloudflareAPI{
+		IPLists:     []cloudflare.IPList{{ID: "11", Name: "wafblocklist"}},
+		IPListItems: make(map[string][]cloudflare.IPListItem),
+		ZoneList:    []cloudflare.Zone{{ID: "zone1"}},
+	}
+	account := testAccount()
+	account.IPListName = "wafblocklist"
+	w := newTestWorker(t, api, account)
+	require.NoError(t, w.Init())
+	require.NoError(t, w.SetUpCloudflareResources())
+	until := time.Now().Add(time.Hour)
+	w.ApplyFullSnapshot(&models.DecisionsStreamResponse{New: []*models.Decision{
+		newDecision("ssh-bf", "ban", "US", "country", until),
+		newDecision("ssh-bf", "ban", "1234", "as", until),
+	}})
+	require.NoError(t, w.Reconcile())
+	require.Contains(t, w.CFStateByAction["block"].CountrySet, "US")
+	require.Contains(t, w.CFStateByAction["block"].AutonomousSystemSet, "1234")
+	require.Contains(t, api.EntrypointRuleset.Rules[0].Expression, `ip.geoip.country in {"US"}`)
+	require.Contains(t, api.EntrypointRuleset.Rules[0].Expression, `ip.geoip.asnum in {1234}`)
+}
+
 func TestSimulatedScopedDecisionsNotEnforced(t *testing.T) {
 	api := &mockCloudflareAPI{
 		IPLists:     []cloudflare.IPList{{ID: "11", Name: "wafblocklist"}},
@@ -482,6 +509,20 @@ func TestRankDecisionsMatchesReconcile(t *testing.T) {
 		keys = append(keys, key)
 	}
 	require.ElementsMatch(t, got, keys)
+}
+
+func TestTransportWithCA(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) }))
+	defer server.Close()
+	cert := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw})
+	path := filepath.Join(t.TempDir(), "ca.pem")
+	require.NoError(t, os.WriteFile(path, cert, 0600))
+	transport, err := transportWithCA(path)
+	require.NoError(t, err)
+	client := &http.Client{Transport: transport}
+	resp, err := client.Get(server.URL)
+	require.NoError(t, err)
+	resp.Body.Close()
 }
 
 func TestGetAPIIsNonBlocking(t *testing.T) {

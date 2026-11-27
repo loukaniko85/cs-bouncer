@@ -116,6 +116,25 @@ cloudflare_config:
 log_mode: stdout
 `
 
+func TestGeneratedCloudflareConfigDefaults(t *testing.T) {
+	config := generatedCloudflareConfig(nil)
+	require.Equal(t, 200, config.MaxCountryDecisions)
+	require.Equal(t, 200, config.MaxASDecisions)
+}
+
+func TestSampleConfigsParse(t *testing.T) {
+	t.Setenv("API_KEY", "test")
+	t.Setenv("CF_ACC_ID", "test")
+	t.Setenv("CF_TOKEN", "test")
+	t.Setenv("CF_ZONE_ID", "test")
+	for _, path := range []string{"../../config/crowdsec-cloudflare-bouncer.yaml", "../../config/crowdsec-cloudflare-bouncer-docker.yaml"} {
+		content, err := os.ReadFile(path)
+		require.NoError(t, err)
+		_, err = NewConfig(strings.NewReader(string(content)))
+		require.NoError(t, err, path)
+	}
+}
+
 func TestRedactSecrets(t *testing.T) {
 	input := []byte(`crowdsec_lapi_key: lapi-secret
 cloudflare_config:
@@ -132,6 +151,9 @@ unifi:
 	require.NotContains(t, output, "unifi-secret")
 	require.Contains(t, output, "admin")
 	require.Contains(t, output, "REDACTED")
+
+	placeholder := string(RedactSecrets([]byte("crowdsec_lapi_key: ${API_KEY}\n")))
+	require.Contains(t, placeholder, "${API_KEY}")
 }
 
 func TestWriteConfigFileUses0600(t *testing.T) {
@@ -264,6 +286,9 @@ func TestNewConfigUnifiValidation(t *testing.T) {
 		{"missing console id", "unifi:\n  enabled: true\n  mode: cloud\n  api_key: k\n", "unifi.console_id"},
 		{"zero max items", "unifi:\n  enabled: true\n  url: https://10.0.24.1\n  api_key: k\n  max_items: 0\n", "unifi.max_items"},
 		{"zero frequency", "unifi:\n  enabled: true\n  url: https://10.0.24.1\n  api_key: k\n  update_frequency: 0s\n", "unifi.update_frequency"},
+		{"empty site", "unifi:\n  enabled: true\n  url: https://10.0.24.1\n  api_key: k\n  site: ''\n", "unifi.site"},
+		{"empty list", "unifi:\n  enabled: true\n  url: https://10.0.24.1\n  api_key: k\n  list_name: ''\n", "unifi.list_name"},
+		{"bad url", "unifi:\n  enabled: true\n  url: not-a-url\n  api_key: k\n", "unifi.url"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
