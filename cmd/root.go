@@ -146,11 +146,14 @@ func Execute() error {
 	g, ctx := errgroup.WithContext(context.Background())
 	// lapiStreams are used to forward the decisions to all the workers
 	lapiStreams := make([]chan *models.DecisionsStreamResponse, 0)
+	resyncStreams := make([]chan *models.DecisionsStreamResponse, 0)
 	APICountByToken := make(map[string]*uint32)
 
 	for _, account := range conf.CloudflareConfig.Accounts {
 		lapiStream := make(chan *models.DecisionsStreamResponse)
 		lapiStreams = append(lapiStreams, lapiStream)
+		resyncStream := make(chan *models.DecisionsStreamResponse)
+		resyncStreams = append(resyncStreams, resyncStream)
 
 		var tokenCallCount uint32 = 0
 		// we want same reference of tokenCallCount per account token
@@ -163,6 +166,7 @@ func Execute() error {
 			APILogger:           APILogger,
 			Ctx:                 ctx,
 			LAPIStream:          lapiStream,
+			ResyncStream:        resyncStream,
 			UpdateFrequency:     conf.CloudflareConfig.UpdateFrequency,
 			FullResyncFrequency: conf.CloudflareConfig.FullResyncFrequency,
 			CFStateByAction:     make(map[string]*cf.CloudflareState),
@@ -200,17 +204,18 @@ func Execute() error {
 
 	if !*onlySetup && !*delete {
 		log.Infof("Starting %s %s", name, version.String())
+		streamOpts := apiclient.DecisionsStreamOpts{
+			Scopes:                 "ip,range,as,country",
+			ScenariosNotContaining: strings.Join(conf.ExcludeScenariosContaining, ","),
+			ScenariosContaining:    strings.Join(conf.IncludeScenariosContaining, ","),
+			Origins:                strings.Join(conf.OnlyIncludeDecisionsFrom, ","),
+		}
 		csLAPI = &csbouncer.StreamBouncer{
 			APIKey:         conf.CrowdSecLAPIKey,
 			APIUrl:         conf.CrowdSecLAPIUrl,
 			TickerInterval: conf.CrowdsecUpdateFrequencyYAML,
 			UserAgent:      fmt.Sprintf("%s/%s", name, version.String()),
-			Opts: apiclient.DecisionsStreamOpts{
-				Scopes:                 "ip,range,as,country",
-				ScenariosNotContaining: strings.Join(conf.ExcludeScenariosContaining, ","),
-				ScenariosContaining:    strings.Join(conf.IncludeScenariosContaining, ","),
-				Origins:                strings.Join(conf.OnlyIncludeDecisionsFrom, ","),
-			},
+			Opts: streamOpts,
 			CertPath:           conf.CertPath,
 			KeyPath:            conf.KeyPath,
 			CAPath:             conf.CAPath,
@@ -226,6 +231,31 @@ func Execute() error {
 		g.Go(func() error {
 			csLAPI.Run(ctx)
 			return fmt.Errorf("crowdsec LAPI stream has stopped")
+		})
+		g.Go(func() error {
+			ticker := time.NewTicker(conf.CloudflareConfig.FullResyncFrequency)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				case <-ticker.C:
+					opts := streamOpts
+					opts.Startup = true
+					snapshot, resp, err := csLAPI.APIClient.Decisions.GetStream(ctx, opts)
+					if resp != nil && resp.Response != nil {
+						resp.Response.Body.Close()
+					}
+					if err != nil {
+						log.Errorf("full resync failed: %s", err)
+						continue
+					}
+					for _, stream := range resyncStreams {
+						s := stream
+						go func() { s <- snapshot }()
+					}
+				}
+			}
 		})
 		g.Go(func() error {
 			for {

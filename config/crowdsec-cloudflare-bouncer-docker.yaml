@@ -13,6 +13,7 @@ cloudflare_config:
   - id: 
     token: 
     ip_list_prefix: crowdsec
+    ip_list_name: crowdsec_block # the single IP list for this account (max 1 list on Free/Pro/Business)
     default_action: managed_challenge
     zones:
     - actions: 
@@ -20,7 +21,36 @@ cloudflare_config:
       zone_id:
     
 
-  update_frequency: 30s # the frequency to update the cloudflare IP list 
+  update_frequency: 5m # how often to reconcile the IP list with the most relevant decisions
+  full_resync_frequency: 168h # weekly full LAPI resync to heal drift
+
+  # Decisions are ranked by severity before filling the 10k list; recency is only a tiebreaker.
+  ranking:
+    patterns:
+    - name: zero_day
+      pattern: '(?i)(0day|zero.?day|cve-{{YEAR}})'
+      score: 100
+    - name: exploit
+      pattern: '(?i)(exploit|rce|sqli|lfi|xxe|ssrf|webshell)'
+      score: 80
+    - name: brute_force
+      pattern: '(?i)(bf|brute|credential|spray)'
+      score: 40
+    - name: scanning
+      pattern: '(?i)(scan|probe|crawl|bot)'
+      score: 10
+    default_score: 20
+    type_scores:
+      ban: 20
+      captcha: 5
+      js_challenge: 5
+    duration_bonus_per_hour: 1
+    duration_bonus_max: 20
+    origin_scores:
+      crowdsec: 10
+      CAPI: 10
+      cscli: 0
+      lists: 0
 
 # Bouncer Config
 daemon: false
