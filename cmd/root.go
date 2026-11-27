@@ -273,6 +273,8 @@ func Execute() error {
 			UpdateFrequency:     conf.CloudflareConfig.UpdateFrequency,
 			FullResyncFrequency: conf.CloudflareConfig.FullResyncFrequency,
 			CFStateByAction:     make(map[string]*cf.CloudflareState),
+			MaxCountryDecisions: conf.CloudflareConfig.MaxCountryDecisions,
+			MaxASDecisions:      conf.CloudflareConfig.MaxASDecisions,
 		}
 		worker.SetRankingConfig(conf.CloudflareConfig.Ranking)
 		if conf.StateFile != "" {

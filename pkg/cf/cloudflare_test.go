@@ -181,12 +181,10 @@ func TestImportExistingSingleList(t *testing.T) {
 	require.Equal(t, "crowdsec_block", w.IPListState.IPList.Name)
 }
 
-func TestMigratesAwayFromCrowdSecManagedList(t *testing.T) {
+func TestExistingListHydratedAndClearedByEmptySnapshot(t *testing.T) {
 	api := &mockCloudflareAPI{
-		IPLists: []cloudflare.IPList{
-			{ID: "11", Name: "crowdsec_block", Description: "block IP list by crowdsec"},
-		},
-		IPListItems: make(map[string][]cloudflare.IPListItem),
+		IPLists:     []cloudflare.IPList{{ID: "11", Name: "wafblocklist"}},
+		IPListItems: map[string][]cloudflare.IPListItem{"11": {{IP: "1.1.1.1"}}},
 		ZoneList:    []cloudflare.Zone{{ID: "zone1"}},
 	}
 	account := testAccount()
@@ -194,10 +192,74 @@ func TestMigratesAwayFromCrowdSecManagedList(t *testing.T) {
 	w := newTestWorker(t, api, account)
 	require.NoError(t, w.Init())
 	require.NoError(t, w.SetUpCloudflareResources())
-	require.Equal(t, []string{"11"}, api.DeletedListIDs)
-	require.Equal(t, 1, api.CreateIPListCalls)
-	require.Equal(t, "wafblocklist", w.IPListState.IPList.Name)
-	require.Equal(t, "Managed block list", w.IPListState.IPList.Description)
+	require.Contains(t, w.IPListState.IPSet, "1.1.1.1")
+	w.ApplyFullSnapshot(&models.DecisionsStreamResponse{})
+	require.NoError(t, w.Reconcile())
+	require.Empty(t, api.IPListItems["11"])
+	require.NotContains(t, api.IPListItems["11"], cloudflare.IPListItem{IP: "10.0.0.1"})
+}
+
+func TestEffectiveCapacityAccountsForOtherLists(t *testing.T) {
+	capacity := 2
+	account := testAccount()
+	account.IPListName = "wafblocklist"
+	account.TotalIPListCapacity = &capacity
+	api := &mockCloudflareAPI{
+		IPLists: []cloudflare.IPList{
+			{ID: "11", Name: "wafblocklist"},
+			{ID: "12", Name: "other", Kind: "ip", NumItems: 1},
+		},
+		IPListItems: make(map[string][]cloudflare.IPListItem),
+		ZoneList:    []cloudflare.Zone{{ID: "zone1"}},
+	}
+	w := newTestWorker(t, api, account)
+	require.NoError(t, w.Init())
+	require.NoError(t, w.SetUpCloudflareResources())
+	require.Equal(t, 1, w.EffectiveCapacity)
+	until := time.Now().Add(time.Hour)
+	w.ApplyFullSnapshot(&models.DecisionsStreamResponse{New: []*models.Decision{
+		newDecision("http-scan", "ban", "1.1.1.1", "ip", until),
+		newDecision("http-scan", "ban", "2.2.2.2", "ip", until),
+		newDecision("http-scan", "ban", "3.3.3.3", "ip", until),
+	}})
+	require.NoError(t, w.Reconcile())
+	require.Len(t, api.IPListItems["11"], 1)
+}
+
+func TestLegacyListMismatchFailsWithoutDeletion(t *testing.T) {
+	api := &mockCloudflareAPI{
+		IPLists:     []cloudflare.IPList{{ID: "11", Name: "crowdsec_block", Description: "block IP list by crowdsec"}},
+		IPListItems: make(map[string][]cloudflare.IPListItem),
+		ZoneList:    []cloudflare.Zone{{ID: "zone1"}},
+	}
+	account := testAccount()
+	account.IPListName = "wafblocklist"
+	w := newTestWorker(t, api, account)
+	require.NoError(t, w.Init())
+	err := w.SetUpCloudflareResources()
+	require.ErrorContains(t, err, "manual migration")
+	require.Empty(t, api.DeletedListIDs)
+}
+
+func TestScopedDecisionsValidatedAndCapped(t *testing.T) {
+	api := &mockCloudflareAPI{
+		IPLists:     []cloudflare.IPList{{ID: "11", Name: "wafblocklist"}},
+		IPListItems: make(map[string][]cloudflare.IPListItem),
+		ZoneList:    []cloudflare.Zone{{ID: "zone1"}},
+	}
+	w := newTestWorker(t, api, testAccount())
+	w.MaxCountryDecisions = 1
+	w.MaxASDecisions = 1
+	require.NoError(t, w.Init())
+	require.NoError(t, w.SetUpCloudflareResources())
+	until := time.Now().Add(time.Hour)
+	w.ActiveDecisions["US"] = map[string]*models.Decision{"us": newDecision("ssh-bf", "ban", "US", "country", until)}
+	w.ActiveDecisions["GB"] = map[string]*models.Decision{"gb": newDecision("http-scan", "ban", "GB", "country", until)}
+	w.ActiveDecisions["1234"] = map[string]*models.Decision{"as": newDecision("ssh-bf", "ban", "1234", "as", until)}
+	w.ActiveDecisions["bad"] = map[string]*models.Decision{"bad": newDecision("ssh-bf", "ban", "not-an-asn", "as", until)}
+	require.NoError(t, w.Reconcile())
+	require.Equal(t, map[string]struct{}{"US": {}}, w.CFStateByAction["block"].CountrySet)
+	require.Equal(t, map[string]struct{}{"1234": {}}, w.CFStateByAction["block"].AutonomousSystemSet)
 }
 
 func TestReconcileCapsAtCapacity(t *testing.T) {

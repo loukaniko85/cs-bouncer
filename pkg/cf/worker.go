@@ -38,6 +38,9 @@ type CloudflareWorker struct {
 	Ranker              *rank.Ranker
 	BlocklistListener   RankedBlocklistListener
 	StatePath           string
+	EffectiveCapacity   int
+	MaxCountryDecisions int
+	MaxASDecisions      int
 	lastStateSave       time.Time
 	rankingConfig       cfg.RankingConfig
 	Ctx                 context.Context

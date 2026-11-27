@@ -7,6 +7,8 @@ import (
 	"github.com/crowdsecurity/cs-cloudflare-bouncer/pkg/cfg"
 	"github.com/crowdsecurity/cs-cloudflare-bouncer/pkg/rank"
 	"reflect"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -28,16 +30,8 @@ func (worker *CloudflareWorker) importExistingIPLists() error {
 			legacy = &list
 		}
 	}
-	// Cloudflare permits only one bulk update every 24h for lists that look
-	// CrowdSec-managed. Replace such a list with a neutral one.
 	if legacy != nil {
-		worker.Logger.Warnf("migrating from CrowdSec-managed list %s to %s", legacy.Name, worker.Account.IPListName)
-		if err := worker.DeleteCrowdSecRules(); err != nil {
-			return err
-		}
-		if _, err := worker.getAPI().DeleteIPList(worker.Ctx, worker.Account.ID, legacy.ID); err != nil {
-			return err
-		}
+		return fmt.Errorf("legacy CrowdSec-managed list %s found; manual migration required: point rules at $%s, delete the legacy list, then restart", legacy.Name, worker.Account.IPListName)
 	}
 	return nil
 }
@@ -59,6 +53,42 @@ func (worker *CloudflareWorker) createMissingIPLists() error {
 	if worker.IPListState.IPSet == nil {
 		worker.IPListState.IPSet = make(map[string]IPSetItem)
 	}
+	return nil
+}
+
+func (worker *CloudflareWorker) hydrateListState() error {
+	items, err := worker.getAPI().ListIPListItems(worker.Ctx, worker.Account.ID, worker.IPListState.IPList.ID)
+	if err != nil {
+		return err
+	}
+	set := make(map[string]IPSetItem, len(items))
+	for _, item := range items {
+		value, err := normalizeDecisionValue(item.IP)
+		if err == nil {
+			set[value] = IPSetItem{}
+		}
+	}
+	worker.IPListState.IPSet = set
+
+	lists, err := worker.getAPI().ListIPLists(worker.Ctx, worker.Account.ID)
+	if err != nil {
+		return err
+	}
+	otherItems := 0
+	for _, list := range lists {
+		if list.ID != worker.IPListState.IPList.ID && list.Kind == "ip" {
+			otherItems += list.NumItems
+		}
+	}
+	capacity := cfg.TotalIPListCapacity
+	if worker.Account.TotalIPListCapacity != nil {
+		capacity = *worker.Account.TotalIPListCapacity
+	}
+	worker.EffectiveCapacity = capacity - otherItems
+	if worker.EffectiveCapacity <= 0 {
+		return fmt.Errorf("no Cloudflare list capacity remains: configured=%d other_ip_list_items=%d", capacity, otherItems)
+	}
+	worker.Logger.Infof("effective IP list capacity: %d (configured=%d other_ip_list_items=%d)", worker.EffectiveCapacity, capacity, otherItems)
 	return nil
 }
 
@@ -92,24 +122,6 @@ func (worker *CloudflareWorker) DeleteExistingIPList() error {
 
 func (worker *CloudflareWorker) replaceListItems(set map[string]IPSetItem) error {
 	id := worker.IPListState.IPList.ID
-	if len(set) == 0 {
-		// ReplaceIPListItemsAsync cannot empty a list; add a placeholder then delete it.
-		set["10.0.0.1"] = IPSetItem{CreatedAt: time.Now()}
-		defer func() {
-			items, err := worker.getAPI().ListIPListItems(worker.Ctx, worker.Account.ID, id)
-			if err == nil && len(items) > 0 {
-				_, err = worker.getAPI().DeleteIPListItems(worker.Ctx, worker.Account.ID, id, cloudflare.IPListItemDeleteRequest{
-					Items: []cloudflare.IPListItemDeleteItemRequest{{ID: items[0].ID}},
-				})
-			}
-			if err != nil {
-				worker.Logger.Error(err)
-			}
-			worker.IPListState.IPSet = make(map[string]IPSetItem)
-			worker.IPListState.IPList.NumItems = 0
-		}()
-	}
-
 	req := make([]cloudflare.IPListItemCreateRequest, 0, len(set))
 	for ip := range set {
 		req = append(req, cloudflare.IPListItemCreateRequest{IP: ip})
@@ -215,9 +227,12 @@ func (worker *CloudflareWorker) Reconcile() error {
 		}
 	}
 
-	capacity := cfg.TotalIPListCapacity
-	if worker.Account.TotalIPListCapacity != nil {
-		capacity = *worker.Account.TotalIPListCapacity
+	capacity := worker.EffectiveCapacity
+	if capacity <= 0 {
+		capacity = cfg.TotalIPListCapacity
+		if worker.Account.TotalIPListCapacity != nil {
+			capacity = *worker.Account.TotalIPListCapacity
+		}
 	}
 	values := RankDecisions(ipDecisions, worker.Ranker, capacity, now)
 	worker.publishRankedIPs(values)
@@ -248,11 +263,49 @@ func (worker *CloudflareWorker) Reconcile() error {
 	return nil
 }
 
-func (worker *CloudflareWorker) refreshScopedSets() {
-	for _, state := range worker.CFStateByAction {
-		state.CountrySet = make(map[string]struct{})
-		state.AutonomousSystemSet = make(map[string]struct{})
+func validCountry(value string) bool {
+	if len(value) != 2 {
+		return false
 	}
+	return value[0] >= 'A' && value[0] <= 'Z' && value[1] >= 'A' && value[1] <= 'Z'
+}
+
+func validASN(value string) bool {
+	_, err := strconv.ParseUint(value, 10, 32)
+	return err == nil
+}
+
+func (worker *CloudflareWorker) rankedScopedValues(values map[string]*models.Decision, limit int) []string {
+	items := make([]*models.Decision, 0, len(values))
+	for _, decision := range values {
+		items = append(items, decision)
+	}
+	now := time.Now()
+	sort.Slice(items, func(i, j int) bool {
+		si, sj := worker.Ranker.Score(items[i], now), worker.Ranker.Score(items[j], now)
+		if si != sj {
+			return si > sj
+		}
+		startI, startJ := worker.Ranker.StartTime(items[i]), worker.Ranker.StartTime(items[j])
+		if !startI.Equal(startJ) {
+			return startI.After(startJ)
+		}
+		return *items[i].Value < *items[j].Value
+	})
+	if len(items) > limit {
+		ScopedDecisionsDroppedTotal.Add(float64(len(items) - limit))
+		items = items[:limit]
+	}
+	result := make([]string, 0, len(items))
+	for _, decision := range items {
+		result = append(result, *decision.Value)
+	}
+	return result
+}
+
+func (worker *CloudflareWorker) refreshScopedSets() {
+	countries := make(map[string]map[string]*models.Decision)
+	asns := make(map[string]map[string]*models.Decision)
 	for _, decisions := range worker.ActiveDecisions {
 		for _, d := range decisions {
 			if d == nil || d.Scope == nil || d.Value == nil || d.Type == nil || (d.Simulated != nil && *d.Simulated) {
@@ -262,16 +315,46 @@ func (worker *CloudflareWorker) refreshScopedSets() {
 			if action == "" || !allZonesHaveAction(worker.Account.ZoneConfigs, action) {
 				action = worker.Account.DefaultAction
 			}
-			state := worker.CFStateByAction[action]
-			if state == nil {
+			if worker.CFStateByAction[action] == nil {
 				continue
 			}
 			switch strings.ToUpper(*d.Scope) {
 			case "COUNTRY":
-				state.CountrySet[*d.Value] = struct{}{}
+				value := strings.ToUpper(*d.Value)
+				if !validCountry(value) {
+					continue
+				}
+				if countries[action] == nil {
+					countries[action] = make(map[string]*models.Decision)
+				}
+				countries[action][value] = d
 			case "AS":
-				state.AutonomousSystemSet[*d.Value] = struct{}{}
+				if !validASN(*d.Value) {
+					continue
+				}
+				if asns[action] == nil {
+					asns[action] = make(map[string]*models.Decision)
+				}
+				asns[action][*d.Value] = d
 			}
+		}
+	}
+	countryLimit := worker.MaxCountryDecisions
+	if countryLimit <= 0 {
+		countryLimit = 200
+	}
+	asLimit := worker.MaxASDecisions
+	if asLimit <= 0 {
+		asLimit = 200
+	}
+	for action, state := range worker.CFStateByAction {
+		state.CountrySet = make(map[string]struct{})
+		for _, value := range worker.rankedScopedValues(countries[action], countryLimit) {
+			state.CountrySet[value] = struct{}{}
+		}
+		state.AutonomousSystemSet = make(map[string]struct{})
+		for _, value := range worker.rankedScopedValues(asns[action], asLimit) {
+			state.AutonomousSystemSet[value] = struct{}{}
 		}
 	}
 }

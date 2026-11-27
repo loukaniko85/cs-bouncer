@@ -108,6 +108,9 @@ func (worker *CloudflareWorker) SetUpCloudflareResources() error {
 	if err := worker.createMissingIPLists(); err != nil {
 		return err
 	}
+	if err := worker.hydrateListState(); err != nil {
+		return err
+	}
 	for _, state := range worker.CFStateByAction {
 		state.IPListState = worker.IPListState
 		state.UpdateExpr()

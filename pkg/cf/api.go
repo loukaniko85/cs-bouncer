@@ -30,6 +30,11 @@ var RankingDroppedTotal prometheus.Counter = promauto.NewCounter(prometheus.Coun
 	Help: "Decisions dropped because the IP list capacity was exhausted",
 })
 
+var ScopedDecisionsDroppedTotal prometheus.Counter = promauto.NewCounter(prometheus.CounterOpts{
+	Name: "crowdsec_scoped_decisions_dropped_total",
+	Help: "COUNTRY/AS decisions dropped because scoped expression caps were reached",
+})
+
 var ListItems prometheus.Gauge = promauto.NewGauge(prometheus.GaugeOpts{
 	Name: "crowdsec_list_items",
 	Help: "Number of items currently in the CrowdSec IP list",
