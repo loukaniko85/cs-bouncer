@@ -1,7 +1,9 @@
 package cfg
 
 import (
+	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -111,6 +113,58 @@ cloudflare_config:
       actions: [block]
 log_mode: stdout
 `
+
+func TestSecretFiles(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, value string) string {
+		path := filepath.Join(dir, name)
+		require.NoError(t, os.WriteFile(path, []byte(value+"\n"), 0600))
+		return path
+	}
+	lapiFile := write("lapi", "lapi-from-file")
+	tokenFile := write("token", "token-from-file")
+	passwordFile := write("password", "password-from-file")
+
+	yaml := fmt.Sprintf(`crowdsec_lapi_url: http://localhost:8080/
+crowdsec_lapi_key_file: %s
+cloudflare_config:
+  accounts:
+  - id: test
+    token_file: %s
+    default_action: block
+    zones:
+    - id: test
+      actions: [block]
+unifi:
+  enabled: true
+  url: https://10.0.24.1
+  username: admin
+  password_file: %s
+`, lapiFile, tokenFile, passwordFile)
+	c, err := NewConfig(strings.NewReader(yaml))
+	require.NoError(t, err)
+	require.Equal(t, "lapi-from-file", c.CrowdSecLAPIKey)
+	require.Equal(t, "token-from-file", c.CloudflareConfig.Accounts[0].Token)
+	require.Equal(t, "password-from-file", c.Unifi.Password)
+
+	both := strings.Replace(yaml, "crowdsec_lapi_key_file:", "crowdsec_lapi_key: inline\ncrowdsec_lapi_key_file:", 1)
+	_, err = NewConfig(strings.NewReader(both))
+	require.ErrorContains(t, err, "crowdsec_lapi_key_file")
+
+	missing := strings.Replace(yaml, lapiFile, filepath.Join(dir, "absent"), 1)
+	_, err = NewConfig(strings.NewReader(missing))
+	require.ErrorContains(t, err, "absent")
+}
+
+func TestStateFileDefaultAndOverride(t *testing.T) {
+	c, err := NewConfig(strings.NewReader(minimalConfigYAML))
+	require.NoError(t, err)
+	require.Empty(t, c.StateFile)
+
+	c, err = NewConfig(strings.NewReader("state_file: /var/lib/cs/state_{account}.json\n"+minimalConfigYAML))
+	require.NoError(t, err)
+	require.Equal(t, "/var/lib/cs/state_{account}.json", c.StateFile)
+}
 
 func TestNewConfigUnifiDefaults(t *testing.T) {
 	c, err := NewConfig(strings.NewReader(minimalConfigYAML))

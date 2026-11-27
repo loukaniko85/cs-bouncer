@@ -98,6 +98,7 @@ type AccountConfig struct {
 	ID                  string       `yaml:"id"`
 	ZoneConfigs         []ZoneConfig `yaml:"zones"`
 	Token               string       `yaml:"token"`
+	TokenFile           string       `yaml:"token_file"`
 	IPListPrefix        string       `yaml:"ip_list_prefix"`
 	IPListName          string       `yaml:"ip_list_name"`
 	DefaultAction       string       `yaml:"default_action"`
@@ -115,6 +116,7 @@ type UnifiConfig struct {
 	Site               string        `yaml:"site"`
 	Username           string        `yaml:"username"`
 	Password           string        `yaml:"password"`
+	PasswordFile       string        `yaml:"password_file"`
 	GroupName          string        `yaml:"group_name"`
 	MaxItems           int           `yaml:"max_items"`
 	InsecureSkipVerify bool          `yaml:"insecure_skip_verify"`
@@ -162,6 +164,8 @@ type PrometheusConfig struct {
 type bouncerConfig struct {
 	CrowdSecLAPIUrl             string           `yaml:"crowdsec_lapi_url"`
 	CrowdSecLAPIKey             string           `yaml:"crowdsec_lapi_key"`
+	CrowdSecLAPIKeyFile         string           `yaml:"crowdsec_lapi_key_file"`
+	StateFile                   string           `yaml:"state_file"`
 	CrowdSecInsecureSkipVerify  bool             `yaml:"crowdsec_insecure_skip_verify"`
 	CrowdsecUpdateFrequencyYAML string           `yaml:"crowdsec_update_frequency"`
 	IncludeScenariosContaining  []string         `yaml:"include_scenarios_containing"`
@@ -187,6 +191,54 @@ func MergedConfig(configPath string) ([]byte, error) {
 }
 
 // NewConfig creates bouncerConfig from the file at provided path
+func readSecretFile(path, field string) (string, error) {
+	if path == "" {
+		return "", nil
+	}
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("%s: %w", field, err)
+	}
+	return strings.TrimRight(string(content), "\r\n"), nil
+}
+
+func resolveSecretFiles(config *bouncerConfig) error {
+	if config.CrowdSecLAPIKey != "" && config.CrowdSecLAPIKeyFile != "" {
+		return fmt.Errorf("crowdsec_lapi_key and crowdsec_lapi_key_file are mutually exclusive")
+	}
+	value, err := readSecretFile(config.CrowdSecLAPIKeyFile, "crowdsec_lapi_key_file")
+	if err != nil {
+		return err
+	}
+	if value != "" {
+		config.CrowdSecLAPIKey = value
+	}
+	for i := range config.CloudflareConfig.Accounts {
+		account := &config.CloudflareConfig.Accounts[i]
+		if account.Token != "" && account.TokenFile != "" {
+			return fmt.Errorf("account %s: token and token_file are mutually exclusive", account.ID)
+		}
+		value, err := readSecretFile(account.TokenFile, "token_file")
+		if err != nil {
+			return err
+		}
+		if value != "" {
+			account.Token = value
+		}
+	}
+	if config.Unifi.Password != "" && config.Unifi.PasswordFile != "" {
+		return fmt.Errorf("unifi.password and unifi.password_file are mutually exclusive")
+	}
+	value, err = readSecretFile(config.Unifi.PasswordFile, "unifi.password_file")
+	if err != nil {
+		return err
+	}
+	if value != "" {
+		config.Unifi.Password = value
+	}
+	return nil
+}
+
 func NewConfig(reader io.Reader) (*bouncerConfig, error) {
 	config := &bouncerConfig{
 		CloudflareConfig: CloudflareConfig{
@@ -207,6 +259,9 @@ func NewConfig(reader io.Reader) (*bouncerConfig, error) {
 	err = yaml.Unmarshal([]byte(configBuff), &config)
 	if err != nil {
 		return nil, fmt.Errorf("failed to unmarshal: %w", err)
+	}
+	if err := resolveSecretFiles(config); err != nil {
+		return nil, err
 	}
 
 	if len(config.CloudflareConfig.Ranking.Patterns) == 0 {
