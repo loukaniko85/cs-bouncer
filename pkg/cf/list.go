@@ -215,6 +215,9 @@ func RankDecisions(decisions []*models.Decision, r *rank.Ranker, capacity int, n
 // Reconcile recomputes the desired list contents from active decisions.
 
 func (worker *CloudflareWorker) Reconcile() error {
+	if !worker.hasFullSnapshot {
+		return nil
+	}
 	now := time.Now()
 	worker.pruneExpired(now)
 

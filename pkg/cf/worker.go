@@ -46,6 +46,7 @@ type CloudflareWorker struct {
 	Ctx                 context.Context
 	Events              chan DecisionEvent
 	lastEventSeq        uint64
+	hasFullSnapshot     bool
 	UpdateFrequency     time.Duration
 	FullResyncFrequency time.Duration
 	nextReconcile       time.Time
@@ -138,6 +139,7 @@ func (worker *CloudflareWorker) applyEvent(e DecisionEvent) {
 // ApplyFullSnapshot replaces the decision set with a fresh startup snapshot.
 
 func (worker *CloudflareWorker) ApplyFullSnapshot(s *models.DecisionsStreamResponse) {
+	worker.hasFullSnapshot = true
 	worker.ActiveDecisions = make(map[string]map[string]*models.Decision)
 	if s == nil {
 		return

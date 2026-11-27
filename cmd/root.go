@@ -13,7 +13,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -259,7 +258,6 @@ func Execute() error {
 	// events are used to forward deltas and weekly snapshots to all workers
 	// through one ordered channel per worker.
 	eventStreams := make([]chan cf.DecisionEvent, 0)
-	var eventSeq uint64
 
 	for _, account := range conf.CloudflareConfig.Accounts {
 		events := make(chan cf.DecisionEvent)
@@ -340,34 +338,7 @@ func Execute() error {
 			return nil
 		}
 		g.Go(func() error {
-			csLAPI.Run(ctx)
-			return fmt.Errorf("crowdsec LAPI stream has stopped")
-		})
-		g.Go(func() error {
-			ticker := time.NewTicker(conf.CloudflareConfig.FullResyncFrequency)
-			defer ticker.Stop()
-			for {
-				select {
-				case <-ctx.Done():
-					return ctx.Err()
-				case <-ticker.C:
-					opts := streamOpts
-					opts.Startup = true
-					snapshot, resp, err := csLAPI.APIClient.Decisions.GetStream(ctx, opts)
-					if resp != nil && resp.Response != nil {
-						resp.Response.Body.Close()
-					}
-					if err != nil {
-						log.Errorf("full resync failed: %s", err)
-						continue
-					}
-					seq := atomic.AddUint64(&eventSeq, 1)
-					for _, events := range eventStreams {
-						stream := events
-						go func() { stream <- cf.DecisionEvent{Decisions: snapshot, FullSnapshot: true, Seq: seq} }()
-					}
-				}
-			}
+			return runLAPIPoller(ctx, csLAPI, eventStreams, conf.CloudflareConfig.FullResyncFrequency)
 		})
 		if conf.Unifi.Enabled {
 			g.Go(func() error {
@@ -385,21 +356,7 @@ func Execute() error {
 				}
 			})
 		}
-		g.Go(func() error {
-			for {
-				// broadcast decision to each worker
-				select {
-				case decisions := <-csLAPI.Stream:
-					seq := atomic.AddUint64(&eventSeq, 1)
-					for _, events := range eventStreams {
-						stream := events
-						go func() { stream <- cf.DecisionEvent{Decisions: decisions, Seq: seq} }()
-					}
-				case <-ctx.Done():
-					return ctx.Err()
-				}
-			}
-		})
+
 	}
 
 	if conf.PrometheusConfig.Enabled {

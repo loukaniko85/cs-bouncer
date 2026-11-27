@@ -126,6 +126,7 @@ func newTestWorker(t *testing.T, api cloudflareAPI, account cfg.AccountConfig) *
 		ActiveDecisions: make(map[string]map[string]*models.Decision),
 		CFStateByAction: make(map[string]*CloudflareState),
 		Ranker:          r,
+		hasFullSnapshot: true,
 	}
 }
 
@@ -491,6 +492,27 @@ func TestGetAPIIsNonBlocking(t *testing.T) {
 		require.NotNil(t, w.getAPI())
 	}
 	require.Less(t, time.Since(start), time.Second)
+}
+
+func TestReconcileWaitsForFullSnapshot(t *testing.T) {
+	api := &mockCloudflareAPI{
+		IPLists:     []cloudflare.IPList{{ID: "11", Name: "wafblocklist"}},
+		IPListItems: make(map[string][]cloudflare.IPListItem),
+		ZoneList:    []cloudflare.Zone{{ID: "zone1"}},
+	}
+	account := testAccount()
+	account.IPListName = "wafblocklist"
+	w := newTestWorker(t, api, account)
+	require.NoError(t, w.Init())
+	require.NoError(t, w.SetUpCloudflareResources())
+	w.hasFullSnapshot = false
+	w.ActiveDecisions["1.1.1.1"] = map[string]*models.Decision{"d": newDecision("ssh-bf", "ban", "1.1.1.1", "ip", time.Now().Add(time.Hour))}
+	require.NoError(t, w.Reconcile())
+	require.Zero(t, api.ReplaceCalls)
+
+	w.ApplyFullSnapshot(&models.DecisionsStreamResponse{New: []*models.Decision{newDecision("ssh-bf", "ban", "1.1.1.1", "ip", time.Now().Add(time.Hour))}})
+	require.NoError(t, w.Reconcile())
+	require.Equal(t, 1, api.ReplaceCalls)
 }
 
 func TestReconcilePublishesRankedIPs(t *testing.T) {
