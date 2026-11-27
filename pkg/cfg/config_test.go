@@ -47,7 +47,7 @@ func TestNewConfig(t *testing.T) {
 							},
 							Token:         "test",
 							IPListPrefix:  "crowdsec",
-							IPListName:    "crowdsec_block",
+							IPListName:    "wafblocklist",
 							DefaultAction: "challenge",
 						},
 					},
@@ -120,7 +120,7 @@ func TestNewConfigRankingDefaults(t *testing.T) {
 	require.Equal(t, 100, c.CloudflareConfig.Ranking.Patterns[0].Score)
 	require.Contains(t, c.CloudflareConfig.Ranking.Patterns[0].Pattern, strconv.Itoa(time.Now().Year()))
 	require.Equal(t, 20, c.CloudflareConfig.Ranking.TypeScores["ban"])
-	require.Equal(t, "crowdsec_block", c.CloudflareConfig.Accounts[0].IPListName)
+	require.Equal(t, "wafblocklist", c.CloudflareConfig.Accounts[0].IPListName)
 }
 
 func TestNewConfigRankingValidation(t *testing.T) {

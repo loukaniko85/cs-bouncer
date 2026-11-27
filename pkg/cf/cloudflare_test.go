@@ -33,6 +33,7 @@ type mockCloudflareAPI struct {
 	UpdateEntrypointCalls int
 	GetEntrypointCalls    int
 	EntrypointErr         error
+	DeletedListIDs        []string
 }
 
 func (m *mockCloudflareAPI) ListZones(ctx context.Context, z ...string) ([]cloudflare.Zone, error) {
@@ -47,6 +48,7 @@ func (m *mockCloudflareAPI) CreateIPList(ctx context.Context, accountID, name, d
 }
 
 func (m *mockCloudflareAPI) DeleteIPList(ctx context.Context, accountID, id string) (cloudflare.IPListDeleteResponse, error) {
+	m.DeletedListIDs = append(m.DeletedListIDs, id)
 	for i, l := range m.IPLists {
 		if l.ID == id {
 			m.IPLists = append(m.IPLists[:i], m.IPLists[i+1:]...)
@@ -175,6 +177,25 @@ func TestImportExistingSingleList(t *testing.T) {
 	require.NoError(t, w.SetUpCloudflareResources())
 	require.Equal(t, 0, api.CreateIPListCalls)
 	require.Equal(t, "crowdsec_block", w.IPListState.IPList.Name)
+}
+
+func TestMigratesAwayFromCrowdSecManagedList(t *testing.T) {
+	api := &mockCloudflareAPI{
+		IPLists: []cloudflare.IPList{
+			{ID: "11", Name: "crowdsec_block", Description: "block IP list by crowdsec"},
+		},
+		IPListItems: make(map[string][]cloudflare.IPListItem),
+		ZoneList:    []cloudflare.Zone{{ID: "zone1"}},
+	}
+	account := testAccount()
+	account.IPListName = "wafblocklist"
+	w := newTestWorker(t, api, account)
+	require.NoError(t, w.Init())
+	require.NoError(t, w.SetUpCloudflareResources())
+	require.Equal(t, []string{"11"}, api.DeletedListIDs)
+	require.Equal(t, 1, api.CreateIPListCalls)
+	require.Equal(t, "wafblocklist", w.IPListState.IPList.Name)
+	require.Equal(t, "Managed block list", w.IPListState.IPList.Description)
 }
 
 func TestReconcileCapsAtCapacity(t *testing.T) {

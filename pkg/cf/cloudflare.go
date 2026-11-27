@@ -280,11 +280,27 @@ func (worker *CloudflareWorker) importExistingIPLists() error {
 	if err != nil {
 		return err
 	}
-	for _, list := range lists {
+	var legacy *cloudflare.IPList
+	for i := range lists {
+		list := lists[i]
 		if list.Name == worker.Account.IPListName {
 			worker.Logger.Infof("using existing ip list %s %s", list.Name, list.ID)
 			worker.IPListState.IPList = &list
 			return nil
+		}
+		if strings.Contains(list.Description, "IP list by crowdsec") {
+			legacy = &list
+		}
+	}
+	// Cloudflare permits only one bulk update every 24h for lists that look
+	// CrowdSec-managed. Replace such a list with a neutral one.
+	if legacy != nil {
+		worker.Logger.Warnf("migrating from CrowdSec-managed list %s to %s", legacy.Name, worker.Account.IPListName)
+		if err := worker.DeleteCrowdSecRules(); err != nil {
+			return err
+		}
+		if _, err := worker.getAPI().DeleteIPList(worker.Ctx, worker.Account.ID, legacy.ID); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -296,7 +312,7 @@ func (worker *CloudflareWorker) createMissingIPLists() error {
 			worker.Ctx,
 			worker.Account.ID,
 			worker.Account.IPListName,
-			worker.Account.IPListName+" IP list by crowdsec",
+			"Managed block list",
 			"ip",
 		)
 		if err != nil {
@@ -328,7 +344,7 @@ func (worker *CloudflareWorker) DeleteExistingIPList() error {
 		return err
 	}
 	for _, list := range lists {
-		if strings.Contains(list.Description, "IP list by crowdsec") {
+		if list.Name == worker.Account.IPListName || strings.Contains(list.Description, "IP list by crowdsec") {
 			worker.Logger.Infof("deleting ip list %s", list.Name)
 			if _, err := worker.getAPI().DeleteIPList(worker.Ctx, worker.Account.ID, list.ID); err != nil {
 				return err
@@ -672,6 +688,11 @@ func (worker *CloudflareWorker) reconcileTick() error {
 		return nil
 	}
 	message := strings.ToLower(err.Error())
+	if strings.Contains(message, "10040") || strings.Contains(message, "24 hours") {
+		worker.nextReconcile = time.Now().Add(24 * time.Hour)
+		worker.Logger.Warnf("Cloudflare allows one bulk list update per 24h for CrowdSec-managed lists; pausing until %s. Rename the list to avoid this limit: %s", worker.nextReconcile.Format(time.RFC3339), err)
+		return nil
+	}
 	if strings.Contains(message, "rate limit") || strings.Contains(message, "too many requests") || strings.Contains(message, "429") {
 		worker.nextReconcile = time.Now().Add(5 * time.Minute)
 		worker.Logger.Warnf("cloudflare rate limited, pausing reconciliation until %s: %s", worker.nextReconcile.Format(time.RFC3339), err)

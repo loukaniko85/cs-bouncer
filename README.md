@@ -20,7 +20,7 @@ A bouncer that syncs the decisions made by CrowdSec with CloudFlare's firewall. 
 
 ## Ranked IP list and refresh cadence
 
-The bouncer maintains **one IP list per account** (default `crowdsec_block`) and
+The bouncer maintains **one IP list per account** (default `wafblocklist`) and
 keeps it under Cloudflare's 10,000-item quota. When there are more decisions
 than slots, decisions are scored by scenario severity — 0-day / current-year
 CVE first, then exploits, brute-force and scanning — with ban type, decision
@@ -43,6 +43,8 @@ Firewall Rules API is no longer called and would fail with error 10020.
 CrowdSec rules are managed in each zone's `http_request_firewall_custom`
 entry-point ruleset and are identified by the `CrowdSec ` description prefix —
 other rules in that ruleset are preserved.
+
+Cloudflare limits lists that look CrowdSec-managed (name `crowdsec_*` or "IP list by crowdsec" description) to **one bulk item update every 24 hours**. The bouncer uses a neutral list name so frequent updates work; on startup it removes the legacy `crowdsec_block` list and its rules and creates the replacement automatically.
 
 Required Cloudflare token permissions: Zone WAF Read/Write, Account Rulesets Read/Write (or Account WAF Read/Write), and Account Filter Lists Edit.
 Legacy Firewall Rules/Filters created by older versions

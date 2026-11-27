@@ -13,7 +13,7 @@ cloudflare_config:
   - id: <CLOUDFLARE_ACCOUNT_ID>
     token: <CLOUDFLARE_TOKEN>
     ip_list_prefix: crowdsec
-    ip_list_name: crowdsec_block # the single IP list for this account (max 1 list on Free/Pro/Business)
+    ip_list_name: wafblocklist # neutral name: Cloudflare limits *CrowdSec-named* lists to one bulk update per 24h
     default_action: managed_challenge
     zones:
     - actions:

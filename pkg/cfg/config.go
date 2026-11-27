@@ -206,7 +206,9 @@ func NewConfig(reader io.Reader) (*bouncerConfig, error) {
 			config.CloudflareConfig.Accounts[i].IPListPrefix = "crowdsec"
 		}
 		if account.IPListName == "" {
-			config.CloudflareConfig.Accounts[i].IPListName = config.CloudflareConfig.Accounts[i].IPListPrefix + "_block"
+			// Cloudflare limits lists that look CrowdSec-managed to one bulk
+			// update per 24h; a neutral name allows frequent updates.
+			config.CloudflareConfig.Accounts[i].IPListName = "wafblocklist"
 		}
 
 		if len(account.DefaultAction) == 0 {
@@ -314,7 +316,7 @@ func ConfigTokens(tokens string, baseConfigPath string) (string, error) {
 				ZoneConfigs:         make([]ZoneConfig, 0),
 				Token:               token,
 				IPListPrefix:        "crowdsec",
-				IPListName:          "crowdsec_block",
+				IPListName:          "wafblocklist",
 				DefaultAction:       "managed_challenge",
 				TotalIPListCapacity: &TotalIPListCapacity,
 			})
