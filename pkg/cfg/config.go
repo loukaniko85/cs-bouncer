@@ -109,6 +109,50 @@ type CloudflareConfig struct {
 	FullResyncFrequency time.Duration   `yaml:"full_resync_frequency"`
 	Ranking             RankingConfig   `yaml:"ranking"`
 }
+type UnifiConfig struct {
+	Enabled            bool          `yaml:"enabled"`
+	URL                string        `yaml:"url"`
+	Site               string        `yaml:"site"`
+	Username           string        `yaml:"username"`
+	Password           string        `yaml:"password"`
+	GroupName          string        `yaml:"group_name"`
+	MaxItems           int           `yaml:"max_items"`
+	InsecureSkipVerify bool          `yaml:"insecure_skip_verify"`
+	UpdateFrequency    time.Duration `yaml:"update_frequency"`
+}
+
+func defaultUnifiConfig() UnifiConfig {
+	return UnifiConfig{
+		Site:               "default",
+		GroupName:          "CrowdSec_Block",
+		MaxItems:           10000,
+		InsecureSkipVerify: true,
+		UpdateFrequency:    5 * time.Minute,
+	}
+}
+
+func validateUnifiConfig(c UnifiConfig) error {
+	if !c.Enabled {
+		return nil
+	}
+	if c.URL == "" {
+		return fmt.Errorf("unifi.url is required when unifi is enabled")
+	}
+	if c.Username == "" {
+		return fmt.Errorf("unifi.username is required when unifi is enabled")
+	}
+	if c.Password == "" {
+		return fmt.Errorf("unifi.password is required when unifi is enabled")
+	}
+	if c.MaxItems <= 0 {
+		return fmt.Errorf("unifi.max_items must be positive")
+	}
+	if c.UpdateFrequency <= 0 {
+		return fmt.Errorf("unifi.update_frequency must be positive")
+	}
+	return nil
+}
+
 type PrometheusConfig struct {
 	Enabled       bool   `yaml:"enabled"`
 	ListenAddress string `yaml:"listen_addr"`
@@ -124,6 +168,7 @@ type bouncerConfig struct {
 	ExcludeScenariosContaining  []string         `yaml:"exclude_scenarios_containing"`
 	OnlyIncludeDecisionsFrom    []string         `yaml:"only_include_decisions_from"`
 	CloudflareConfig            CloudflareConfig `yaml:"cloudflare_config"`
+	Unifi                       UnifiConfig      `yaml:"unifi"`
 	Daemon                      bool             `yaml:"daemon"`
 	Logging                     LoggingConfig    `yaml:",inline"`
 	PrometheusConfig            PrometheusConfig `yaml:"prometheus"`
@@ -149,6 +194,7 @@ func NewConfig(reader io.Reader) (*bouncerConfig, error) {
 			FullResyncFrequency: 168 * time.Hour,
 			Ranking:             defaultRankingConfig(),
 		},
+		Unifi: defaultUnifiConfig(),
 	}
 
 	content, err := io.ReadAll(reader)
@@ -177,6 +223,9 @@ func NewConfig(reader io.Reader) (*bouncerConfig, error) {
 		return nil, fmt.Errorf("cloudflare_config.full_resync_frequency must be positive")
 	}
 	if err := validateRankingConfig(config.CloudflareConfig.Ranking); err != nil {
+		return nil, err
+	}
+	if err := validateUnifiConfig(config.Unifi); err != nil {
 		return nil, err
 	}
 
@@ -378,6 +427,7 @@ func ConfigTokens(tokens string, baseConfigPath string) (string, error) {
 func setDefaults(cfg *bouncerConfig) {
 	cfg.CrowdSecLAPIUrl = "http://localhost:8080/"
 	cfg.CrowdsecUpdateFrequencyYAML = "10s"
+	cfg.Unifi = defaultUnifiConfig()
 
 	cfg.Daemon = true
 	cfg.ExcludeScenariosContaining = []string{

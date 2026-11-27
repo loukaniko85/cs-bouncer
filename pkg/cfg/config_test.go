@@ -55,6 +55,7 @@ func TestNewConfig(t *testing.T) {
 					FullResyncFrequency: 168 * time.Hour,
 					Ranking:             expandedDefaultRanking(),
 				},
+				Unifi:    defaultUnifiConfig(),
 				Daemon:   false,
 				Logging: LoggingConfig{
 					LogMode:  "stdout",
@@ -110,6 +111,60 @@ cloudflare_config:
       actions: [block]
 log_mode: stdout
 `
+
+func TestNewConfigUnifiDefaults(t *testing.T) {
+	c, err := NewConfig(strings.NewReader(minimalConfigYAML))
+	require.NoError(t, err)
+	require.False(t, c.Unifi.Enabled)
+	require.Equal(t, "default", c.Unifi.Site)
+	require.Equal(t, "CrowdSec_Block", c.Unifi.GroupName)
+	require.Equal(t, 10000, c.Unifi.MaxItems)
+	require.Equal(t, 5*time.Minute, c.Unifi.UpdateFrequency)
+	require.True(t, c.Unifi.InsecureSkipVerify)
+}
+
+func TestNewConfigUnifiValidation(t *testing.T) {
+	cases := []struct {
+		name    string
+		patch   string
+		wantErr string
+	}{
+		{"missing url", "unifi:\n  enabled: true\n  username: u\n  password: p\n", "unifi.url"},
+		{"missing username", "unifi:\n  enabled: true\n  url: https://10.0.24.1\n  password: p\n", "unifi.username"},
+		{"missing password", "unifi:\n  enabled: true\n  url: https://10.0.24.1\n  username: u\n", "unifi.password"},
+		{"zero max items", "unifi:\n  enabled: true\n  url: https://10.0.24.1\n  username: u\n  password: p\n  max_items: 0\n", "unifi.max_items"},
+		{"zero frequency", "unifi:\n  enabled: true\n  url: https://10.0.24.1\n  username: u\n  password: p\n  update_frequency: 0s\n", "unifi.update_frequency"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			yaml := tc.patch + minimalConfigYAML
+			_, err := NewConfig(strings.NewReader(yaml))
+			require.ErrorContains(t, err, tc.wantErr)
+		})
+	}
+}
+
+func TestNewConfigUnifiEnabled(t *testing.T) {
+	yaml := `unifi:
+  enabled: true
+  url: https://10.0.24.1
+  username: admin
+  password: ${UNIFI_PASSWORD}
+  group_name: My_Block
+  max_items: 500
+  update_frequency: 10m
+  insecure_skip_verify: false
+` + minimalConfigYAML
+	c, err := NewConfig(strings.NewReader(yaml))
+	require.NoError(t, err)
+	require.True(t, c.Unifi.Enabled)
+	require.Equal(t, "https://10.0.24.1", c.Unifi.URL)
+	require.Equal(t, "My_Block", c.Unifi.GroupName)
+	require.Equal(t, 500, c.Unifi.MaxItems)
+	require.Equal(t, 10*time.Minute, c.Unifi.UpdateFrequency)
+	require.False(t, c.Unifi.InsecureSkipVerify)
+	require.Equal(t, "secret", c.Unifi.Password)
+}
 
 func TestNewConfigRankingDefaults(t *testing.T) {
 	c, err := NewConfig(strings.NewReader(minimalConfigYAML))
