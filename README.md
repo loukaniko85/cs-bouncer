@@ -55,6 +55,16 @@ retried on the next tick, and never stop Cloudflare updates. Use a dedicated
 local UniFi user, and pass the password via `${UNIFI_PASSWORD}` rather than
 storing it in plain text.
 
+## Pinning the container image
+
+`:latest` is convenient but mutable. Each successful `build-container` workflow
+run prints the pushed image digest in its job summary. For production, pin that
+digest instead:
+
+```yaml
+image: ghcr.io/loukaniko85/cs-cloudflare-bouncer@sha256:<digest-from-workflow-summary>
+```
+
 ## Migration notes
 
 This version uses Cloudflare's **Rulesets API** for WAF rules; the legacy
