@@ -175,7 +175,7 @@ type trafficMatchingList struct {
 	ID    string              `json:"id"`
 	Name  string              `json:"name"`
 	Type  string              `json:"type"`
-	Items []map[string]string `json:"items"`
+	Items []json.RawMessage `json:"items"`
 }
 
 // prepareMembers keeps valid IPv4 addresses/subnets, dedupes and caps.

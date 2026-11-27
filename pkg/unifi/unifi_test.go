@@ -49,7 +49,7 @@ func TestSyncGroupCreatesAndUpdatesWithAPIKey(t *testing.T) {
 		if r.Method == http.MethodGet {
 			data := "[]"
 			if created {
-				data = `[{"id":"list-uuid","name":"CrowdSec_Blocklist","type":"IPV4_ADDRESSES"}]`
+				data = `[{"id":"list-uuid","name":"CrowdSec_Blocklist","type":"IPV4_ADDRESSES","items":[{"type":"IP_ADDRESS","value":123}]}]`
 			}
 			_, _ = w.Write([]byte(`{"data":` + data + `,"totalCount":1}`))
 			return
