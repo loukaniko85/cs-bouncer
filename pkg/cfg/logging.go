@@ -15,13 +15,14 @@ import (
 )
 
 type LoggingConfig struct {
-	LogLevel     *log.Level `yaml:"log_level"`
-	LogMode      string     `yaml:"log_mode"`
-	LogDir       string     `yaml:"log_dir"`
-	LogMaxSize   int        `yaml:"log_max_size,omitempty"`
-	LogMaxFiles  int        `yaml:"log_max_files,omitempty"`
-	LogMaxAge    int        `yaml:"log_max_age,omitempty"`
-	CompressLogs *bool      `yaml:"compress_logs,omitempty"`
+	LogLevel      *log.Level `yaml:"log_level"`
+	LogMode       string     `yaml:"log_mode"`
+	LogDir        string     `yaml:"log_dir"`
+	LogMaxSize    int        `yaml:"log_max_size,omitempty"`
+	LogMaxFiles   int        `yaml:"log_max_files,omitempty"`
+	LogMaxBackups int        `yaml:"log_max_backups,omitempty"` // deprecated alias
+	LogMaxAge     int        `yaml:"log_max_age,omitempty"`
+	CompressLogs  *bool      `yaml:"compress_logs,omitempty"`
 }
 
 func (c *LoggingConfig) LoggerForFile(fileName string) (io.Writer, error) {

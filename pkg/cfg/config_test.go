@@ -116,6 +116,13 @@ cloudflare_config:
 log_mode: stdout
 `
 
+func TestLegacyLogMaxBackupsAlias(t *testing.T) {
+	yaml := strings.Replace(minimalConfigYAML, "log_mode: stdout", "log_mode: stdout\nlog_max_backups: 7", 1)
+	config, err := NewConfig(strings.NewReader(yaml))
+	require.NoError(t, err)
+	require.Equal(t, 7, config.Logging.LogMaxFiles)
+}
+
 func TestGeneratedCloudflareConfigDefaults(t *testing.T) {
 	config := generatedCloudflareConfig(nil)
 	require.Equal(t, 200, config.MaxCountryDecisions)

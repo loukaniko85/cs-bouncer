@@ -364,6 +364,9 @@ func NewConfig(reader io.Reader) (*bouncerConfig, error) {
 	if err := decoder.Decode(config); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal: %w", err)
 	}
+	if config.Logging.LogMaxFiles == 0 && config.Logging.LogMaxBackups > 0 {
+		config.Logging.LogMaxFiles = config.Logging.LogMaxBackups
+	}
 	if err := resolveSecretFiles(config); err != nil {
 		return nil, err
 	}
