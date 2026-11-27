@@ -177,7 +177,10 @@ func RankDecisions(decisions []*models.Decision, r *rank.Ranker, capacity int, n
 			continue
 		}
 		copyOfDecision := *d
-		value := normalizeDecisionValue(*d.Value)
+		value, err := normalizeDecisionValue(*d.Value)
+		if err != nil {
+			continue
+		}
 		copyOfDecision.Value = &value
 		normalized = append(normalized, &copyOfDecision)
 	}
@@ -252,7 +255,7 @@ func (worker *CloudflareWorker) refreshScopedSets() {
 	}
 	for _, decisions := range worker.ActiveDecisions {
 		for _, d := range decisions {
-			if d.Scope == nil || d.Value == nil || d.Type == nil {
+			if d == nil || d.Scope == nil || d.Value == nil || d.Type == nil || (d.Simulated != nil && *d.Simulated) {
 				continue
 			}
 			action := CloudflareActionByDecisionType[*d.Type]

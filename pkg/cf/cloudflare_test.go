@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strconv"
@@ -215,7 +216,7 @@ func TestReconcileCapsAtCapacity(t *testing.T) {
 		decisions = append(decisions, newDecision("0day-exploit", "ban", fmt.Sprintf("10.0.0.%d", i), "ip", until))
 	}
 	for i := 0; i < 10000; i++ {
-		decisions = append(decisions, newDecision("http-scan", "ban", fmt.Sprintf("192.0.2.%d.%d", i/256, i%256), "ip", until))
+		decisions = append(decisions, newDecision("http-scan", "ban", fmt.Sprintf("192.0.%d.%d", i/256, i%256), "ip", until))
 	}
 	w.ApplyFullSnapshot(&models.DecisionsStreamResponse{New: decisions})
 	require.NoError(t, w.Reconcile())
@@ -340,6 +341,53 @@ func TestStateFilePerAccount(t *testing.T) {
 	template := "/var/lib/cs/state_{account}.json"
 	require.Equal(t, "/var/lib/cs/state_a.json", statePath(template, "a"))
 	require.Equal(t, "/var/lib/cs/state_b.json", statePath(template, "b"))
+}
+
+func TestNormalizeDecisionValueRejectsMalformed(t *testing.T) {
+	_, err := normalizeDecisionValue("not:an:ip")
+	require.Error(t, err)
+}
+
+func TestAddDecisionSkipsMalformedAndSimulated(t *testing.T) {
+	api := &mockCloudflareAPI{IPListItems: make(map[string][]cloudflare.IPListItem)}
+	w := newTestWorker(t, api, testAccount())
+	until := time.Now().Add(time.Hour)
+	simulated := newDecision("ssh-bf", "ban", "1.1.1.1", "ip", until)
+	simulated.Simulated = ptr.Of(true)
+	w.ApplyStream(&models.DecisionsStreamResponse{New: []*models.Decision{
+		newDecision("ssh-bf", "ban", "bad:value", "ip", until),
+		simulated,
+	}})
+	require.Empty(t, w.ActiveDecisions)
+}
+
+func TestLoadStateSkipsNullDecisions(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	require.NoError(t, os.WriteFile(path, []byte(`{"1.2.3.4":{"bad":null}}`), 0600))
+	loaded, err := LoadState(path)
+	require.NoError(t, err)
+	require.Empty(t, loaded)
+}
+
+func TestSimulatedScopedDecisionsNotEnforced(t *testing.T) {
+	api := &mockCloudflareAPI{
+		IPLists:     []cloudflare.IPList{{ID: "11", Name: "wafblocklist"}},
+		IPListItems: make(map[string][]cloudflare.IPListItem),
+		ZoneList:    []cloudflare.Zone{{ID: "zone1"}},
+	}
+	w := newTestWorker(t, api, testAccount())
+	require.NoError(t, w.Init())
+	require.NoError(t, w.SetUpCloudflareResources())
+	until := time.Now().Add(time.Hour)
+	country := newDecision("ssh-bf", "ban", "US", "country", until)
+	country.Simulated = ptr.Of(true)
+	asn := newDecision("ssh-bf", "ban", "1234", "as", until)
+	asn.Simulated = ptr.Of(true)
+	w.ActiveDecisions["US"] = map[string]*models.Decision{"country": country}
+	w.ActiveDecisions["1234"] = map[string]*models.Decision{"as": asn}
+	require.NoError(t, w.Reconcile())
+	require.Empty(t, w.CFStateByAction["block"].CountrySet)
+	require.Empty(t, w.CFStateByAction["block"].AutonomousSystemSet)
 }
 
 func TestRankDecisionsMatchesReconcile(t *testing.T) {
@@ -551,6 +599,10 @@ func TestCloudflareState_computeExpression(t *testing.T) {
 }
 
 func Test_normalizeIP(t *testing.T) {
-	require.Equal(t, "1.2.3.4", normalizeDecisionValue("1.2.3.4"))
-	require.Equal(t, "2001:db8:85a3::/64", normalizeDecisionValue("2001:0db8:85a3:0000:0000:8a2e:0370:7334"))
+	got, err := normalizeDecisionValue("1.2.3.4")
+	require.NoError(t, err)
+	require.Equal(t, "1.2.3.4", got)
+	got, err = normalizeDecisionValue("2001:0db8:85a3:0000:0000:8a2e:0370:7334")
+	require.NoError(t, err)
+	require.Equal(t, "2001:db8:85a3::/64", got)
 }

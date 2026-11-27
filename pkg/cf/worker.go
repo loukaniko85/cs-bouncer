@@ -53,10 +53,16 @@ type CloudflareWorker struct {
 // this is useful for testing allowing us to mock it.
 
 func (worker *CloudflareWorker) addDecision(d *models.Decision) {
-	if d == nil || d.Value == nil {
+	if d == nil || d.Value == nil || (d.Simulated != nil && *d.Simulated) {
 		return
 	}
-	value := normalizeDecisionValue(*d.Value)
+	value, err := normalizeDecisionValue(*d.Value)
+	if err != nil {
+		if worker.Logger != nil {
+			worker.Logger.Debugf("ignoring malformed decision value %q: %s", *d.Value, err)
+		}
+		return
+	}
 	if worker.ActiveDecisions[value] == nil {
 		worker.ActiveDecisions[value] = make(map[string]*models.Decision)
 	}
@@ -67,7 +73,10 @@ func (worker *CloudflareWorker) removeDecision(d *models.Decision) {
 	if d == nil || d.Value == nil {
 		return
 	}
-	value := normalizeDecisionValue(*d.Value)
+	value, err := normalizeDecisionValue(*d.Value)
+	if err != nil {
+		return
+	}
 	delete(worker.ActiveDecisions[value], decisionKey(d))
 	if len(worker.ActiveDecisions[value]) == 0 {
 		delete(worker.ActiveDecisions, value)

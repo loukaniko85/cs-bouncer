@@ -72,6 +72,20 @@ func TestRankDedupKeepsHighestScore(t *testing.T) {
 	require.Equal(t, "captcha", *got[0].Type)
 }
 
+func TestRankBanTieBreakIsSymmetric(t *testing.T) {
+	r := testRanker(t)
+	until := testNow.Add(4 * time.Hour)
+	captchaUntil := until.Add(time.Hour)
+	for _, decisions := range [][]*models.Decision{
+		{decision("scan", "ban", "1.2.3.4", false, until), decision("scan", "captcha", "1.2.3.4", false, captchaUntil)},
+		{decision("scan", "captcha", "1.2.3.4", false, captchaUntil), decision("scan", "ban", "1.2.3.4", false, until)},
+	} {
+		got := r.Rank(decisions, testNow)
+		require.Len(t, got, 1)
+		require.Equal(t, "ban", *got[0].Type)
+	}
+}
+
 func TestRankDropsSimulatedAndExpired(t *testing.T) {
 	r := testRanker(t)
 	got := r.Rank([]*models.Decision{

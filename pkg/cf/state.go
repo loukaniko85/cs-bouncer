@@ -73,6 +73,10 @@ func LoadState(path string) (map[string]map[string]*models.Decision, error) {
 	now := time.Now()
 	for value, decisions := range active {
 		for key, decision := range decisions {
+			if decision == nil {
+				delete(decisions, key)
+				continue
+			}
 			if decision.Until == "" {
 				continue
 			}
@@ -178,20 +182,42 @@ func decisionKey(d *models.Decision) string {
 	return strings.Join([]string{value, scenario, typ, origin, duration, d.Until}, "|")
 }
 
-func normalizeDecisionValue(value string) string {
-	if strings.Count(value, ":") <= 1 {
-		if strings.HasSuffix(value, "/32") {
-			return value[:len(value)-3]
+func normalizeDecisionValue(value string) (string, error) {
+	if strings.Contains(value, "/") && !strings.Contains(value, ":") {
+		host, network, err := net.ParseCIDR(value)
+		if err != nil || host.To4() == nil {
+			return "", fmt.Errorf("invalid IPv4 value %q", value)
 		}
-		return value
+		ones, bits := network.Mask.Size()
+		if ones == 32 && bits == 32 {
+			return host.String(), nil
+		}
+		return network.String(), nil
+	}
+	if !strings.Contains(value, ":") {
+		parsed := net.ParseIP(value)
+		if parsed == nil || parsed.To4() == nil {
+			return "", fmt.Errorf("invalid IPv4 value %q", value)
+		}
+		return parsed.String(), nil
+	}
+	if !strings.Contains(value, "/") {
+		parsed := net.ParseIP(value)
+		if parsed == nil || parsed.To4() != nil {
+			return "", fmt.Errorf("invalid IPv6 value %q", value)
+		}
+		value = parsed.String()
 	}
 	_, address, err := net.ParseCIDR(value)
 	if err != nil {
-		_, address, _ = net.ParseCIDR(value + "/64")
+		_, address, err = net.ParseCIDR(value + "/64")
+		if err != nil {
+			return "", fmt.Errorf("invalid IPv6 value %q: %w", value, err)
+		}
 	}
 	if ones, _ := address.Mask.Size(); ones < 64 {
-		return address.String()
+		return address.String(), nil
 	}
 	address.Mask = net.CIDRMask(64, 128)
-	return address.String()
+	return address.String(), nil
 }

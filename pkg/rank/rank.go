@@ -99,8 +99,10 @@ func (r *Ranker) better(candidate, current *models.Decision, now time.Time) bool
 	if cs != currentScore {
 		return cs > currentScore
 	}
-	if candidate.Type != nil && *candidate.Type == "ban" && (current.Type == nil || *current.Type != "ban") {
-		return true
+	candidateBan := candidate.Type != nil && *candidate.Type == "ban"
+	currentBan := current.Type != nil && *current.Type == "ban"
+	if candidateBan != currentBan {
+		return candidateBan
 	}
 	return r.StartTime(candidate).After(r.StartTime(current))
 }
@@ -140,6 +142,11 @@ func (r *Ranker) Rank(decisions []*models.Decision, now time.Time) []*models.Dec
 		startI, startJ := r.StartTime(ranked[i]), r.StartTime(ranked[j])
 		if !startI.Equal(startJ) {
 			return startI.After(startJ)
+		}
+		banI := ranked[i].Type != nil && *ranked[i].Type == "ban"
+		banJ := ranked[j].Type != nil && *ranked[j].Type == "ban"
+		if banI != banJ {
+			return banI
 		}
 		return *ranked[i].Value < *ranked[j].Value
 	})
