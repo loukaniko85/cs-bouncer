@@ -275,6 +275,9 @@ func Execute() error {
 			CFStateByAction:     make(map[string]*cf.CloudflareState),
 		}
 		worker.SetRankingConfig(conf.CloudflareConfig.Ranking)
+		if conf.StateFile != "" {
+			worker.StatePath = strings.ReplaceAll(conf.StateFile, "{account}", account.ID)
+		}
 		if conf.Unifi.Enabled {
 			worker.BlocklistListener = coordinator
 		}

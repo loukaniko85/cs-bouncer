@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"reflect"
 	"strconv"
 	"testing"
@@ -311,6 +312,34 @@ type recordingListener struct {
 func (r *recordingListener) Publish(account string, ips []string) {
 	r.accounts = append(r.accounts, account)
 	r.ips = append(r.ips, ips)
+}
+
+func TestStateRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	active := map[string]map[string]*models.Decision{
+		"1.2.3.4": {"ban|ssh-bf|1.2.3.4": newDecision("ssh-bf", "ban", "1.2.3.4", "ip", time.Now().Add(time.Hour))},
+	}
+	require.NoError(t, SaveState(path, active))
+	loaded, err := LoadState(path)
+	require.NoError(t, err)
+	require.Equal(t, *active["1.2.3.4"]["ban|ssh-bf|1.2.3.4"], *loaded["1.2.3.4"]["ban|ssh-bf|1.2.3.4"])
+}
+
+func TestLoadStateDropsExpired(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	active := map[string]map[string]*models.Decision{
+		"1.2.3.4": {"old": newDecision("ssh-bf", "ban", "1.2.3.4", "ip", time.Now().Add(-time.Hour))},
+	}
+	require.NoError(t, SaveState(path, active))
+	loaded, err := LoadState(path)
+	require.NoError(t, err)
+	require.Empty(t, loaded)
+}
+
+func TestStateFilePerAccount(t *testing.T) {
+	template := "/var/lib/cs/state_{account}.json"
+	require.Equal(t, "/var/lib/cs/state_a.json", statePath(template, "a"))
+	require.Equal(t, "/var/lib/cs/state_b.json", statePath(template, "b"))
 }
 
 func TestRankDecisionsMatchesReconcile(t *testing.T) {

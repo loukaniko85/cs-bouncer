@@ -3,10 +3,13 @@ package cf
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"reflect"
 	"sort"
 	"strings"
@@ -54,6 +57,66 @@ var ListItems prometheus.Gauge = promauto.NewGauge(prometheus.GaugeOpts{
 	Name: "crowdsec_list_items",
 	Help: "Number of items currently in the CrowdSec IP list",
 })
+
+func statePath(template, accountID string) string {
+	return strings.ReplaceAll(template, "{account}", accountID)
+}
+
+// SaveState writes the active decision set atomically.
+func SaveState(path string, active map[string]map[string]*models.Decision) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return err
+	}
+	encoded, err := json.Marshal(active)
+	if err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".state-*")
+	if err != nil {
+		return err
+	}
+	name := tmp.Name()
+	defer os.Remove(name)
+	if _, err := tmp.Write(encoded); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(name, path)
+}
+
+// LoadState reads a persisted decision set and drops expired decisions.
+func LoadState(path string) (map[string]map[string]*models.Decision, error) {
+	content, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return make(map[string]map[string]*models.Decision), nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	active := make(map[string]map[string]*models.Decision)
+	if err := json.Unmarshal(content, &active); err != nil {
+		return nil, err
+	}
+	now := time.Now()
+	for value, decisions := range active {
+		for key, decision := range decisions {
+			if decision.Until == "" {
+				continue
+			}
+			until, err := time.Parse(time.RFC3339, decision.Until)
+			if err == nil && until.Before(now) {
+				delete(decisions, key)
+			}
+		}
+		if len(decisions) == 0 {
+			delete(active, value)
+		}
+	}
+	return active, nil
+}
 
 type IPSetItem struct {
 	CreatedAt time.Time
@@ -142,6 +205,8 @@ type CloudflareWorker struct {
 	ActiveDecisions     map[string]map[string]*models.Decision
 	Ranker              *rank.Ranker
 	BlocklistListener   RankedBlocklistListener
+	StatePath           string
+	lastStateSave       time.Time
 	rankingConfig       cfg.RankingConfig
 	Ctx                 context.Context
 	Events              chan DecisionEvent
@@ -246,6 +311,24 @@ func (worker *CloudflareWorker) ApplyStream(s *models.DecisionsStreamResponse) {
 	for _, d := range s.Deleted {
 		worker.removeDecision(d)
 	}
+	worker.saveStateIfDue()
+}
+
+func (worker *CloudflareWorker) saveStateIfDue() {
+	if worker.StatePath == "" {
+		return
+	}
+	now := time.Now()
+	if !worker.lastStateSave.IsZero() && now.Sub(worker.lastStateSave) < 30*time.Second {
+		return
+	}
+	if err := SaveState(worker.StatePath, worker.ActiveDecisions); err != nil {
+		if worker.Logger != nil {
+			worker.Logger.Warnf("could not persist decision state: %s", err)
+		}
+		return
+	}
+	worker.lastStateSave = now
 }
 
 // applyEvent applies an event unless an older-numbered event already arrived.
@@ -273,6 +356,7 @@ func (worker *CloudflareWorker) ApplyFullSnapshot(s *models.DecisionsStreamRespo
 	for _, d := range s.New {
 		worker.addDecision(d)
 	}
+	worker.saveStateIfDue()
 }
 
 func (worker *CloudflareWorker) importExistingIPLists() error {
@@ -609,6 +693,14 @@ func (worker *CloudflareWorker) Init() error {
 	}
 	if worker.ActiveDecisions == nil {
 		worker.ActiveDecisions = make(map[string]map[string]*models.Decision)
+	}
+	if worker.StatePath != "" {
+		loaded, err := LoadState(worker.StatePath)
+		if err != nil {
+			worker.Logger.Warnf("could not load decision state: %s", err)
+		} else {
+			worker.ActiveDecisions = loaded
+		}
 	}
 	if worker.IPListState.IPSet == nil {
 		worker.IPListState.IPSet = make(map[string]IPSetItem)

@@ -1,6 +1,8 @@
 # CrowdSec Config
 crowdsec_lapi_url: http://localhost:8080/
 crowdsec_lapi_key: ${API_KEY}
+# Optional persisted decision state (one file per account, {account} is replaced).
+state_file: # /var/lib/cs-cloudflare-bouncer/state_{account}.json
 crowdsec_update_frequency: 10s
 
 include_scenarios_containing: [] # ignore IPs banned for triggering scenarios not containing either of provided word EG ["http"]
