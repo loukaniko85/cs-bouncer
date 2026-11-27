@@ -21,7 +21,6 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/crowdsecurity/crowdsec/pkg/apiclient"
-	"github.com/crowdsecurity/crowdsec/pkg/models"
 	csbouncer "github.com/crowdsecurity/go-cs-bouncer"
 	"github.com/crowdsecurity/go-cs-lib/csdaemon"
 	"github.com/crowdsecurity/go-cs-lib/version"
@@ -144,16 +143,15 @@ func Execute() error {
 	var csLAPI *csbouncer.StreamBouncer
 
 	g, ctx := errgroup.WithContext(context.Background())
-	// lapiStreams are used to forward the decisions to all the workers
-	lapiStreams := make([]chan *models.DecisionsStreamResponse, 0)
-	resyncStreams := make([]chan *models.DecisionsStreamResponse, 0)
+	// events are used to forward deltas and weekly snapshots to all workers
+	// through one ordered channel per worker.
+	eventStreams := make([]chan cf.DecisionEvent, 0)
+	var eventSeq uint64
 	APICountByToken := make(map[string]*uint32)
 
 	for _, account := range conf.CloudflareConfig.Accounts {
-		lapiStream := make(chan *models.DecisionsStreamResponse)
-		lapiStreams = append(lapiStreams, lapiStream)
-		resyncStream := make(chan *models.DecisionsStreamResponse)
-		resyncStreams = append(resyncStreams, resyncStream)
+		events := make(chan cf.DecisionEvent)
+		eventStreams = append(eventStreams, events)
 
 		var tokenCallCount uint32 = 0
 		// we want same reference of tokenCallCount per account token
@@ -165,8 +163,7 @@ func Execute() error {
 			Account:             account,
 			APILogger:           APILogger,
 			Ctx:                 ctx,
-			LAPIStream:          lapiStream,
-			ResyncStream:        resyncStream,
+			Events:              events,
 			UpdateFrequency:     conf.CloudflareConfig.UpdateFrequency,
 			FullResyncFrequency: conf.CloudflareConfig.FullResyncFrequency,
 			CFStateByAction:     make(map[string]*cf.CloudflareState),
@@ -181,8 +178,7 @@ func Execute() error {
 				if err != nil {
 					return err
 				}
-				err = worker.SetUpCloudflareResources()
-				return err
+				return worker.Setup()
 			})
 		} else if *delete {
 			g.Go(func() error {
@@ -191,8 +187,10 @@ func Execute() error {
 				if err != nil {
 					return err
 				}
-				err = worker.DeleteExistingIPList()
-				return err
+				if err := worker.DeleteCrowdSecRules(); err != nil {
+					return err
+				}
+				return worker.DeleteExistingIPList()
 			})
 		} else {
 			g.Go(func() error {
@@ -250,9 +248,10 @@ func Execute() error {
 						log.Errorf("full resync failed: %s", err)
 						continue
 					}
-					for _, stream := range resyncStreams {
-						s := stream
-						go func() { s <- snapshot }()
+					seq := atomic.AddUint64(&eventSeq, 1)
+					for _, events := range eventStreams {
+						stream := events
+						go func() { stream <- cf.DecisionEvent{Decisions: snapshot, FullSnapshot: true, Seq: seq} }()
 					}
 				}
 			}
@@ -262,9 +261,10 @@ func Execute() error {
 				// broadcast decision to each worker
 				select {
 				case decisions := <-csLAPI.Stream:
-					for _, lapiStream := range lapiStreams {
-						stream := lapiStream
-						go func() { stream <- decisions }()
+					seq := atomic.AddUint64(&eventSeq, 1)
+					for _, events := range eventStreams {
+						stream := events
+						go func() { stream <- cf.DecisionEvent{Decisions: decisions, Seq: seq} }()
 					}
 				case <-ctx.Done():
 					return ctx.Err()

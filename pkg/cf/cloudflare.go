@@ -120,6 +120,14 @@ func (cfState *CloudflareState) UpdateExpr() bool {
 	return isNew
 }
 
+// DecisionEvent carries a stream update with a monotonic sequence number so a
+// delayed weekly snapshot cannot overwrite newer LAPI deltas.
+type DecisionEvent struct {
+	Decisions    *models.DecisionsStreamResponse
+	FullSnapshot bool
+	Seq          uint64
+}
+
 type CloudflareWorker struct {
 	Logger              *log.Entry
 	APILogger           *log.Logger
@@ -131,8 +139,8 @@ type CloudflareWorker struct {
 	Ranker              *rank.Ranker
 	rankingConfig       cfg.RankingConfig
 	Ctx                 context.Context
-	LAPIStream          chan *models.DecisionsStreamResponse
-	ResyncStream        chan *models.DecisionsStreamResponse
+	Events              chan DecisionEvent
+	lastEventSeq        uint64
 	UpdateFrequency     time.Duration
 	FullResyncFrequency time.Duration
 	API                 cloudflareAPI
@@ -236,6 +244,22 @@ func (worker *CloudflareWorker) ApplyStream(s *models.DecisionsStreamResponse) {
 	}
 	for _, d := range s.Deleted {
 		worker.removeDecision(d)
+	}
+}
+
+// applyEvent applies an event unless an older-numbered event already arrived.
+func (worker *CloudflareWorker) applyEvent(e DecisionEvent) {
+	if e.Seq != 0 {
+		if e.Seq < worker.lastEventSeq {
+			worker.Logger.Debugf("ignoring stale decision event %d", e.Seq)
+			return
+		}
+		worker.lastEventSeq = e.Seq
+	}
+	if e.FullSnapshot {
+		worker.ApplyFullSnapshot(e.Decisions)
+	} else {
+		worker.ApplyStream(e.Decisions)
 	}
 }
 
@@ -397,7 +421,19 @@ func (worker *CloudflareWorker) Reconcile() error {
 		}
 	}
 
-	ranked := worker.Ranker.Rank(ipDecisions, now)
+	// Normalize before ranking and before applying the capacity limit, so
+	// equivalent values (e.g. 1.2.3.4 and 1.2.3.4/32) cannot waste slots.
+	normalized := make([]*models.Decision, 0, len(ipDecisions))
+	for _, d := range ipDecisions {
+		if d.Value == nil {
+			continue
+		}
+		copyOfDecision := *d
+		value := normalizeDecisionValue(*d.Value)
+		copyOfDecision.Value = &value
+		normalized = append(normalized, &copyOfDecision)
+	}
+	ranked := worker.Ranker.Rank(normalized, now)
 	capacity := cfg.TotalIPListCapacity
 	if worker.Account.TotalIPListCapacity != nil {
 		capacity = *worker.Account.TotalIPListCapacity
@@ -409,7 +445,7 @@ func (worker *CloudflareWorker) Reconcile() error {
 
 	newSet := make(map[string]IPSetItem, len(ranked))
 	for _, d := range ranked {
-		value := normalizeDecisionValue(*d.Value)
+		value := *d.Value
 		if old, ok := worker.IPListState.IPSet[value]; ok {
 			newSet[value] = old
 		} else {
@@ -586,6 +622,50 @@ func (worker *CloudflareWorker) SetUpCloudflareResources() error {
 	return nil
 }
 
+// Setup creates the list and its rules (used by the -s CLI flag).
+func (worker *CloudflareWorker) Setup() error {
+	if err := worker.SetUpCloudflareResources(); err != nil {
+		return err
+	}
+	return worker.UpdateRules()
+}
+
+// DeleteCrowdSecRules removes our rules from every zone before the IP list is deleted.
+func (worker *CloudflareWorker) DeleteCrowdSecRules() error {
+	for _, zone := range worker.Account.ZoneConfigs {
+		rc := cloudflare.ZoneIdentifier(zone.ID)
+		current, err := worker.getAPI().GetEntrypointRuleset(worker.Ctx, rc, rulesetPhase)
+		if err != nil {
+			return err
+		}
+		kept := make([]cloudflare.RulesetRule, 0, len(current.Rules))
+		for _, rule := range current.Rules {
+			if !strings.HasPrefix(rule.Description, ruleDescriptionPrefix) {
+				kept = append(kept, rule)
+			}
+		}
+		if len(kept) == len(current.Rules) {
+			continue
+		}
+		worker.Logger.WithField("zone_id", zone.ID).Info("removing CrowdSec rules")
+		if _, err := worker.getAPI().UpdateEntrypointRuleset(worker.Ctx, rc, cloudflare.UpdateEntrypointRulesetParams{
+			Phase: rulesetPhase,
+			Rules: kept,
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// reconcileTick logs transient failures so the daemon retries on the next tick.
+func (worker *CloudflareWorker) reconcileTick() error {
+	if err := worker.Reconcile(); err != nil {
+		worker.Logger.Errorf("reconcile failed, retrying next tick: %s", err)
+	}
+	return nil
+}
+
 type InterceptLogger struct {
 	Tripper http.RoundTripper
 	logger  *log.Logger
@@ -631,14 +711,9 @@ func (worker *CloudflareWorker) Run() error {
 		case <-worker.Ctx.Done():
 			return worker.Ctx.Err()
 		case <-ticker.C:
-			if err := worker.Reconcile(); err != nil {
-				worker.Logger.Error(err)
-				return err
-			}
-		case decisions := <-worker.LAPIStream:
-			worker.ApplyStream(decisions)
-		case snapshot := <-worker.ResyncStream:
-			worker.ApplyFullSnapshot(snapshot)
+			worker.reconcileTick()
+		case event := <-worker.Events:
+			worker.applyEvent(event)
 		}
 	}
 }

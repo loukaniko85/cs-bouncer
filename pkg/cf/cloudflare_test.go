@@ -2,6 +2,7 @@ package cf
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"reflect"
 	"strconv"
@@ -30,6 +31,7 @@ type mockCloudflareAPI struct {
 	CreateIPListCalls     int
 	ReplaceCalls          int
 	UpdateEntrypointCalls int
+	EntrypointErr         error
 }
 
 func (m *mockCloudflareAPI) ListZones(ctx context.Context, z ...string) ([]cloudflare.Zone, error) {
@@ -79,6 +81,9 @@ func (m *mockCloudflareAPI) DeleteIPListItems(ctx context.Context, accountID, id
 }
 
 func (m *mockCloudflareAPI) GetEntrypointRuleset(ctx context.Context, rc *cloudflare.ResourceContainer, phase string) (cloudflare.Ruleset, error) {
+	if m.EntrypointErr != nil {
+		return cloudflare.Ruleset{}, m.EntrypointErr
+	}
 	return m.EntrypointRuleset, nil
 }
 
@@ -273,6 +278,90 @@ func TestUpdateRulesUsesRulesetsAPI(t *testing.T) {
 	w.CFStateByAction["block"] = &CloudflareState{Action: "block", CurrExpr: "(ip.src in $crowdsec_block)"}
 	require.NoError(t, w.UpdateRules())
 	require.Equal(t, 1, api.UpdateEntrypointCalls)
+}
+
+func TestReconcileTickSwallowsErrors(t *testing.T) {
+	api := &mockCloudflareAPI{
+		IPLists:       []cloudflare.IPList{{ID: "11", Name: "crowdsec_block"}},
+		IPListItems:   make(map[string][]cloudflare.IPListItem),
+		ZoneList:      []cloudflare.Zone{{ID: "zone1"}},
+		EntrypointErr: errors.New("cloudflare 5xx"),
+	}
+	w := newTestWorker(t, api, testAccount())
+	require.NoError(t, w.Init())
+	require.NoError(t, w.SetUpCloudflareResources())
+	require.NoError(t, w.reconcileTick(), "a transient API error must not stop the daemon")
+}
+
+func TestReconcileNormalizesBeforeCapacity(t *testing.T) {
+	capacity := 2
+	account := testAccount()
+	account.TotalIPListCapacity = &capacity
+	api := &mockCloudflareAPI{
+		IPLists:     []cloudflare.IPList{{ID: "11", Name: "crowdsec_block"}},
+		IPListItems: make(map[string][]cloudflare.IPListItem),
+		ZoneList:    []cloudflare.Zone{{ID: "zone1"}},
+	}
+	w := newTestWorker(t, api, account)
+	require.NoError(t, w.Init())
+	require.NoError(t, w.SetUpCloudflareResources())
+	until := time.Now().Add(4 * time.Hour)
+	w.ApplyFullSnapshot(&models.DecisionsStreamResponse{New: []*models.Decision{
+		newDecision("http-scan", "ban", "1.2.3.4", "ip", until),
+		newDecision("http-scan", "ban", "1.2.3.4/32", "ip", until),
+		newDecision("http-scan", "ban", "5.6.7.8", "ip", until),
+		newDecision("http-scan", "ban", "9.9.9.9", "ip", until),
+	}})
+	require.NoError(t, w.Reconcile())
+	require.Len(t, api.IPListItems["11"], 2, "equivalent IPs must not consume two slots")
+	require.NotContains(t, w.IPListState.IPSet, "1.2.3.4/32")
+}
+
+func TestSetupCreatesRules(t *testing.T) {
+	api := &mockCloudflareAPI{
+		IPLists:     []cloudflare.IPList{{ID: "11", Name: "crowdsec_block"}},
+		IPListItems: make(map[string][]cloudflare.IPListItem),
+		ZoneList:    []cloudflare.Zone{{ID: "zone1"}},
+	}
+	w := newTestWorker(t, api, testAccount())
+	require.NoError(t, w.Init())
+	require.NoError(t, w.Setup())
+	require.Equal(t, 1, api.UpdateEntrypointCalls)
+	require.Len(t, api.EntrypointRuleset.Rules, 1)
+}
+
+func TestDeleteCrowdSecRules(t *testing.T) {
+	userRule := cloudflare.RulesetRule{Description: "my rule", Action: "log", Expression: "true"}
+	api := &mockCloudflareAPI{
+		IPListItems: make(map[string][]cloudflare.IPListItem),
+		EntrypointRuleset: cloudflare.Ruleset{
+			Phase: rulesetPhase,
+			Rules: []cloudflare.RulesetRule{userRule, {Description: "CrowdSec block rule", Action: "block", Expression: "old"}},
+		},
+	}
+	w := newTestWorker(t, api, testAccount())
+	require.NoError(t, w.DeleteCrowdSecRules())
+	require.Equal(t, 1, api.UpdateEntrypointCalls)
+	require.Equal(t, []cloudflare.RulesetRule{userRule}, api.EntrypointRuleset.Rules)
+}
+
+func TestStaleSnapshotIgnored(t *testing.T) {
+	api := &mockCloudflareAPI{IPListItems: make(map[string][]cloudflare.IPListItem)}
+	w := newTestWorker(t, api, testAccount())
+	until := time.Now().Add(4 * time.Hour)
+	w.applyEvent(DecisionEvent{Seq: 10, FullSnapshot: true, Decisions: &models.DecisionsStreamResponse{
+		New: []*models.Decision{newDecision("scan", "ban", "1.1.1.1", "ip", until)},
+	}})
+	w.applyEvent(DecisionEvent{Seq: 9, FullSnapshot: true, Decisions: &models.DecisionsStreamResponse{
+		New: []*models.Decision{newDecision("scan", "ban", "2.2.2.2", "ip", until)},
+	}})
+	require.Contains(t, w.ActiveDecisions, "1.1.1.1")
+	require.NotContains(t, w.ActiveDecisions, "2.2.2.2")
+
+	w.applyEvent(DecisionEvent{Seq: 11, Decisions: &models.DecisionsStreamResponse{
+		New: []*models.Decision{newDecision("scan", "ban", "3.3.3.3", "ip", until)},
+	}})
+	require.Contains(t, w.ActiveDecisions, "3.3.3.3")
 }
 
 func Test_setToExprList(t *testing.T) {
