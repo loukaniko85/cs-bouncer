@@ -1,14 +1,14 @@
 Name:      crowdsec-cloudflare-bouncer
 Version:   %(echo $VERSION)
 Release:   %(echo $PACKAGE_NUMBER)%{?dist}
-Summary:   cloudflare bouncer for Crowdsec 
+Summary:   CrowdSec bouncer for Cloudflare and UniFi 
 
 License:   MIT
 URL:       https://crowdsec.net
 Source0:   https://github.com/crowdsecurity/%{name}/archive/v%(echo $VERSION).tar.gz
 BuildRoot: %{_tmppath}/%{name}-%{version}-%{release}-root-%(%{__id_u} -n)
 
-BuildRequires: make
+BuildRequires: make, golang >= 1.27, git
 %{?fc33:BuildRequires: systemd-rpm-macros}
 
 Requires: gettext

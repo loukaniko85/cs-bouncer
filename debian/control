@@ -1,11 +1,11 @@
 Source: crowdsec-cloudflare-bouncer
 Maintainer: Crowdsec Team <debian@crowdsec.net>
-Build-Depends: debhelper
+Build-Depends: debhelper, golang-go, git, make
 Section: admin
 Priority: optional
 
 Package: crowdsec-cloudflare-bouncer
 Provides: crowdsec-cloudflare-bouncer
 Depends: gettext-base
-Description: Cloudflare bouncer for Crowdsec
+Description: CrowdSec bouncer for Cloudflare and UniFi
 Architecture: any

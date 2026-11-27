@@ -10,13 +10,13 @@
 &#128172; <a href="https://discourse.crowdsec.net">Discourse </a>
 </p>
 
-# CrowdSec Cloudflare Bouncer
+# CrowdSec Bouncer (Cloudflare + UniFi)
 
 A bouncer for Cloudflare.
 
 ## How does it work
 
-A bouncer that syncs the decisions made by CrowdSec with CloudFlare's firewall. Manages multi user, multi account, multi zone setup. Supports IP, Country and AS scoped decisions.
+A bouncer that syncs CrowdSec decisions to Cloudflare and UniFi using severity-ranked blocklists. Supports multi-account / multi-zone Cloudflare setups and IPv4 IP, range, country and AS decisions.
 
 ## Ranked IP list and refresh cadence
 

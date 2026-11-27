@@ -81,5 +81,5 @@ log_level: info # valid choices are either debug, info, error
 
 prometheus:
   enabled: true
-  listen_addr: 127.0.0.1
+  listen_addr: 0.0.0.0
   listen_port: 2112
