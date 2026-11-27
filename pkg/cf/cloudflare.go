@@ -428,7 +428,7 @@ func (worker *CloudflareWorker) Reconcile() error {
 	for _, state := range worker.CFStateByAction {
 		state.UpdateExpr()
 	}
-	return nil
+	return worker.UpdateRules()
 }
 
 func (worker *CloudflareWorker) refreshScopedSets() {
@@ -459,8 +459,59 @@ func (worker *CloudflareWorker) refreshScopedSets() {
 	}
 }
 
-// UpdateRules is implemented with the Rulesets API in Task 5.
+func rulesEqual(a, b []cloudflare.RulesetRule) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i].Description != b[i].Description || a[i].Action != b[i].Action || a[i].Expression != b[i].Expression {
+			return false
+		}
+	}
+	return true
+}
+
+// UpdateRules keeps one rule per configured action in each zone's
+// http_request_firewall_custom entry-point ruleset, preserving user rules.
 func (worker *CloudflareWorker) UpdateRules() error {
+	for _, zone := range worker.Account.ZoneConfigs {
+		rc := cloudflare.ZoneIdentifier(zone.ID)
+		current, err := worker.getAPI().GetEntrypointRuleset(worker.Ctx, rc, rulesetPhase)
+		if err != nil {
+			return err
+		}
+		desired := make([]cloudflare.RulesetRule, 0, len(current.Rules)+len(zone.Actions))
+		for _, rule := range current.Rules {
+			if !strings.HasPrefix(rule.Description, ruleDescriptionPrefix) {
+				desired = append(desired, rule)
+			}
+		}
+		for _, action := range zone.Actions {
+			state := worker.CFStateByAction[action]
+			if state == nil {
+				continue
+			}
+			expression := state.CurrExpr
+			if expression == "" {
+				expression = state.computeExpression()
+			}
+			desired = append(desired, cloudflare.RulesetRule{
+				Action:      action,
+				Expression:  expression,
+				Description: ruleDescriptionPrefix + action + " rule",
+			})
+		}
+		if rulesEqual(current.Rules, desired) {
+			continue
+		}
+		worker.Logger.WithField("zone_id", zone.ID).Infof("updating %d rulesets rules", len(desired))
+		if _, err := worker.getAPI().UpdateEntrypointRuleset(worker.Ctx, rc, cloudflare.UpdateEntrypointRulesetParams{
+			Phase: rulesetPhase,
+			Rules: desired,
+		}); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -581,10 +632,6 @@ func (worker *CloudflareWorker) Run() error {
 			return worker.Ctx.Err()
 		case <-ticker.C:
 			if err := worker.Reconcile(); err != nil {
-				worker.Logger.Error(err)
-				return err
-			}
-			if err := worker.UpdateRules(); err != nil {
 				worker.Logger.Error(err)
 				return err
 			}

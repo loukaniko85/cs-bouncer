@@ -113,6 +113,7 @@ func newTestWorker(t *testing.T, api cloudflareAPI, account cfg.AccountConfig) *
 		Ctx:             context.Background(),
 		IPListState:     IPListState{IPSet: make(map[string]IPSetItem)},
 		ActiveDecisions: make(map[string]map[string]*models.Decision),
+		CFStateByAction: make(map[string]*CloudflareState),
 		Ranker:          r,
 	}
 }
@@ -229,6 +230,49 @@ func TestApplyFullSnapshot(t *testing.T) {
 	require.Contains(t, w.ActiveDecisions, "1.1.1.1")
 	require.Contains(t, w.ActiveDecisions, "2.2.2.2")
 	require.NotContains(t, w.ActiveDecisions, "9.9.9.9")
+}
+
+func TestUpdateEntrypointRulesetPreservesUserRules(t *testing.T) {
+	userRule := cloudflare.RulesetRule{
+		Description: "my rule",
+		Action:      "log",
+		Expression:  `cf.zone.name eq "example.com"`,
+	}
+	api := &mockCloudflareAPI{
+		IPListItems: make(map[string][]cloudflare.IPListItem),
+		EntrypointRuleset: cloudflare.Ruleset{
+			Phase: rulesetPhase,
+			Rules: []cloudflare.RulesetRule{
+				userRule,
+				{Description: "CrowdSec block rule", Action: "block", Expression: "old expression"},
+			},
+		},
+	}
+	w := newTestWorker(t, api, testAccount())
+	w.CFStateByAction["block"] = &CloudflareState{
+		Action:   "block",
+		CurrExpr: "(ip.src in $crowdsec_block)",
+	}
+
+	require.NoError(t, w.UpdateRules())
+	require.Equal(t, 1, api.UpdateEntrypointCalls)
+	rules := api.EntrypointRuleset.Rules
+	require.Len(t, rules, 2)
+	require.Equal(t, userRule, rules[0])
+	require.Equal(t, "CrowdSec block rule", rules[1].Description)
+	require.Equal(t, "(ip.src in $crowdsec_block)", rules[1].Expression)
+	require.Equal(t, "block", rules[1].Action)
+
+	require.NoError(t, w.UpdateRules())
+	require.Equal(t, 1, api.UpdateEntrypointCalls, "no-op tick must not write")
+}
+
+func TestUpdateRulesUsesRulesetsAPI(t *testing.T) {
+	api := &mockCloudflareAPI{IPListItems: make(map[string][]cloudflare.IPListItem)}
+	w := newTestWorker(t, api, testAccount())
+	w.CFStateByAction["block"] = &CloudflareState{Action: "block", CurrExpr: "(ip.src in $crowdsec_block)"}
+	require.NoError(t, w.UpdateRules())
+	require.Equal(t, 1, api.UpdateEntrypointCalls)
 }
 
 func Test_setToExprList(t *testing.T) {
