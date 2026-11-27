@@ -109,6 +109,9 @@ type CloudflareConfig struct {
 	UpdateFrequency     time.Duration   `yaml:"update_frequency"`
 	FullResyncFrequency time.Duration   `yaml:"full_resync_frequency"`
 	Ranking             RankingConfig   `yaml:"ranking"`
+	CAFile              string          `yaml:"ca_file"`
+	MaxCountryDecisions int             `yaml:"max_country_decisions"`
+	MaxASDecisions      int             `yaml:"max_as_decisions"`
 }
 type UnifiConfig struct {
 	Enabled            bool          `yaml:"enabled"`
@@ -120,6 +123,8 @@ type UnifiConfig struct {
 	GroupName          string        `yaml:"group_name"`
 	MaxItems           int           `yaml:"max_items"`
 	InsecureSkipVerify bool          `yaml:"insecure_skip_verify"`
+	CAFile             string        `yaml:"ca_file"`
+	AllowInsecureHTTP  bool          `yaml:"allow_insecure_http"`
 	UpdateFrequency    time.Duration `yaml:"update_frequency"`
 }
 
@@ -128,7 +133,7 @@ func defaultUnifiConfig() UnifiConfig {
 		Site:               "default",
 		GroupName:          "CrowdSec_Block",
 		MaxItems:           10000,
-		InsecureSkipVerify: true,
+		InsecureSkipVerify: false,
 		UpdateFrequency:    5 * time.Minute,
 	}
 }
@@ -151,6 +156,9 @@ func validateUnifiConfig(c UnifiConfig) error {
 	}
 	if c.UpdateFrequency <= 0 {
 		return fmt.Errorf("unifi.update_frequency must be positive")
+	}
+	if strings.HasPrefix(c.URL, "http://") && !c.AllowInsecureHTTP {
+		return fmt.Errorf("unifi.allow_insecure_http must be true to use an http URL")
 	}
 	return nil
 }
@@ -245,6 +253,8 @@ func NewConfig(reader io.Reader) (*bouncerConfig, error) {
 			UpdateFrequency:     5 * time.Minute,
 			FullResyncFrequency: 168 * time.Hour,
 			Ranking:             defaultRankingConfig(),
+			MaxCountryDecisions: 200,
+			MaxASDecisions:      200,
 		},
 		Unifi: defaultUnifiConfig(),
 	}
@@ -255,13 +265,27 @@ func NewConfig(reader io.Reader) (*bouncerConfig, error) {
 	}
 
 	configBuff := csstring.StrictExpand(string(content), os.LookupEnv)
+	if start := strings.Index(configBuff, "${"); start >= 0 {
+		if end := strings.Index(configBuff[start+2:], "}"); end >= 0 {
+			name := configBuff[start+2 : start+2+end]
+			return nil, fmt.Errorf("config contains unresolved environment variable %s", name)
+		}
+		return nil, fmt.Errorf("config contains an unresolved environment variable placeholder")
+	}
 
-	err = yaml.Unmarshal([]byte(configBuff), &config)
-	if err != nil {
+	decoder := yaml.NewDecoder(strings.NewReader(configBuff))
+	decoder.KnownFields(true)
+	if err := decoder.Decode(config); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal: %w", err)
 	}
 	if err := resolveSecretFiles(config); err != nil {
 		return nil, err
+	}
+	if len(config.CloudflareConfig.Accounts) == 0 {
+		return nil, fmt.Errorf("cloudflare_config.accounts must contain at least one account")
+	}
+	if config.CrowdSecLAPIKey == "" && (config.CertPath == "" || config.KeyPath == "") {
+		return nil, fmt.Errorf("crowdsec_lapi_key or both cert_path and key_path are required")
 	}
 
 	if len(config.CloudflareConfig.Ranking.Patterns) == 0 {
@@ -294,6 +318,9 @@ func NewConfig(reader io.Reader) (*bouncerConfig, error) {
 	validChoiceMsg := "valid choices are either of 'block', 'js_challenge', 'challenge', 'managed_challenge'"
 
 	for i, account := range config.CloudflareConfig.Accounts {
+		if account.ID == "" {
+			return nil, fmt.Errorf("account id must not be empty")
+		}
 		if _, ok := accountIDSet[account.ID]; ok {
 			return nil, fmt.Errorf("the account '%s' is duplicated", account.ID)
 		}
@@ -305,6 +332,11 @@ func NewConfig(reader io.Reader) (*bouncerConfig, error) {
 
 		if account.TotalIPListCapacity == nil {
 			config.CloudflareConfig.Accounts[i].TotalIPListCapacity = &TotalIPListCapacity
+		} else if *account.TotalIPListCapacity <= 0 {
+			return nil, fmt.Errorf("account %s total_ip_list_capacity must be positive", account.ID)
+		}
+		if config.CloudflareConfig.MaxCountryDecisions <= 0 || config.CloudflareConfig.MaxASDecisions <= 0 {
+			return nil, fmt.Errorf("max_country_decisions and max_as_decisions must be positive")
 		}
 		if account.IPListPrefix == "" {
 			config.CloudflareConfig.Accounts[i].IPListPrefix = "crowdsec"
@@ -323,6 +355,9 @@ func NewConfig(reader io.Reader) (*bouncerConfig, error) {
 		}
 		zoneUsingChallenge := make([]string, 0)
 		for j, zone := range account.ZoneConfigs {
+			if zone.ID == "" {
+				return nil, fmt.Errorf("account %s has an empty zone id", account.ID)
+			}
 			config.CloudflareConfig.Accounts[i].ZoneConfigs[j].ActionSet = map[string]struct{}{}
 			if len(zone.Actions) == 0 {
 				return nil, fmt.Errorf("account %s 's zone %s has no action", account.ID, zone.ID)

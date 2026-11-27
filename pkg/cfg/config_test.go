@@ -56,6 +56,8 @@ func TestNewConfig(t *testing.T) {
 					UpdateFrequency:     time.Second * 30,
 					FullResyncFrequency: 168 * time.Hour,
 					Ranking:             expandedDefaultRanking(),
+					MaxCountryDecisions: 200,
+					MaxASDecisions:      200,
 				},
 				Unifi:    defaultUnifiConfig(),
 				Daemon:   false,
@@ -109,10 +111,59 @@ cloudflare_config:
     token: test
     default_action: block
     zones:
-    - id: test
+    - zone_id: test
       actions: [block]
 log_mode: stdout
 `
+
+func TestConfigHardening(t *testing.T) {
+	t.Run("unknown field", func(t *testing.T) {
+		_, err := NewConfig(strings.NewReader("unknown_key: value\n" + minimalConfigYAML))
+		require.ErrorContains(t, err, "unknown_key")
+	})
+	t.Run("no accounts", func(t *testing.T) {
+		_, err := NewConfig(strings.NewReader("crowdsec_lapi_url: http://localhost:8080/\ncrowdsec_lapi_key: test\n"))
+		require.ErrorContains(t, err, "at least one")
+	})
+	t.Run("empty account id", func(t *testing.T) {
+		yaml := strings.Replace(minimalConfigYAML, "id: test", "id: ''", 1)
+		_, err := NewConfig(strings.NewReader(yaml))
+		require.ErrorContains(t, err, "account id")
+	})
+	t.Run("empty zone id", func(t *testing.T) {
+		yaml := strings.Replace(minimalConfigYAML, "- zone_id: test\n      actions", "- zone_id: ''\n      actions", 1)
+		_, err := NewConfig(strings.NewReader(yaml))
+		require.ErrorContains(t, err, "zone id")
+	})
+	t.Run("unresolved env", func(t *testing.T) {
+		yaml := strings.Replace(minimalConfigYAML, "crowdsec_lapi_key: test", "crowdsec_lapi_key: ${MISSING_TEST_VAR}", 1)
+		_, err := NewConfig(strings.NewReader(yaml))
+		require.ErrorContains(t, err, "MISSING_TEST_VAR")
+	})
+	t.Run("negative capacity", func(t *testing.T) {
+		yaml := strings.Replace(minimalConfigYAML, "default_action: block", "default_action: block\n    total_ip_list_capacity: -1", 1)
+		_, err := NewConfig(strings.NewReader(yaml))
+		require.ErrorContains(t, err, "total_ip_list_capacity")
+	})
+	t.Run("missing lapi auth", func(t *testing.T) {
+		yaml := strings.Replace(minimalConfigYAML, "crowdsec_lapi_key: test\n", "", 1)
+		_, err := NewConfig(strings.NewReader(yaml))
+		require.ErrorContains(t, err, "crowdsec_lapi_key")
+	})
+	t.Run("mtls without api key", func(t *testing.T) {
+		yaml := strings.Replace(minimalConfigYAML, "crowdsec_lapi_key: test\n", "cert_path: /tmp/cert\nkey_path: /tmp/key\n", 1)
+		_, err := NewConfig(strings.NewReader(yaml))
+		require.NoError(t, err)
+	})
+	t.Run("unifi secure defaults", func(t *testing.T) {
+		c, err := NewConfig(strings.NewReader(minimalConfigYAML))
+		require.NoError(t, err)
+		require.False(t, c.Unifi.InsecureSkipVerify)
+		require.False(t, c.Unifi.AllowInsecureHTTP)
+		require.Equal(t, 200, c.CloudflareConfig.MaxCountryDecisions)
+		require.Equal(t, 200, c.CloudflareConfig.MaxASDecisions)
+	})
+}
 
 func TestSecretFiles(t *testing.T) {
 	dir := t.TempDir()
@@ -133,7 +184,7 @@ cloudflare_config:
     token_file: %s
     default_action: block
     zones:
-    - id: test
+    - zone_id: test
       actions: [block]
 unifi:
   enabled: true
@@ -174,7 +225,7 @@ func TestNewConfigUnifiDefaults(t *testing.T) {
 	require.Equal(t, "CrowdSec_Block", c.Unifi.GroupName)
 	require.Equal(t, 10000, c.Unifi.MaxItems)
 	require.Equal(t, 5*time.Minute, c.Unifi.UpdateFrequency)
-	require.True(t, c.Unifi.InsecureSkipVerify)
+	require.False(t, c.Unifi.InsecureSkipVerify)
 }
 
 func TestNewConfigUnifiValidation(t *testing.T) {
