@@ -172,9 +172,9 @@ func (c *Client) resolveSite(ctx context.Context) (string, error) {
 }
 
 type trafficMatchingList struct {
-	ID    string              `json:"id"`
-	Name  string              `json:"name"`
-	Type  string              `json:"type"`
+	ID    string            `json:"id"`
+	Name  string            `json:"name"`
+	Type  string            `json:"type"`
 	Items []json.RawMessage `json:"items"`
 }
 
