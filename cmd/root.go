@@ -12,7 +12,6 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -144,13 +143,6 @@ func Execute() error {
 
 	var csLAPI *csbouncer.StreamBouncer
 
-	zoneLocks := make([]cf.ZoneLock, 0)
-	for _, account := range conf.CloudflareConfig.Accounts {
-		for _, zone := range account.ZoneConfigs {
-			zoneLocks = append(zoneLocks, cf.ZoneLock{ZoneID: zone.ID, Lock: &sync.Mutex{}})
-		}
-	}
-
 	g, ctx := errgroup.WithContext(context.Background())
 	// lapiStreams are used to forward the decisions to all the workers
 	lapiStreams := make([]chan *models.DecisionsStreamResponse, 0)
@@ -167,15 +159,16 @@ func Execute() error {
 		}
 
 		worker := cf.CloudflareWorker{
-			Account:         account,
-			APILogger:       APILogger,
-			Ctx:             ctx,
-			ZoneLocks:       zoneLocks,
-			LAPIStream:      lapiStream,
-			UpdateFrequency: conf.CloudflareConfig.UpdateFrequency,
-			CFStateByAction: make(map[string]*cf.CloudflareState),
-			TokenCallCount:  APICountByToken[account.Token],
+			Account:             account,
+			APILogger:           APILogger,
+			Ctx:                 ctx,
+			LAPIStream:          lapiStream,
+			UpdateFrequency:     conf.CloudflareConfig.UpdateFrequency,
+			FullResyncFrequency: conf.CloudflareConfig.FullResyncFrequency,
+			CFStateByAction:     make(map[string]*cf.CloudflareState),
+			TokenCallCount:      APICountByToken[account.Token],
 		}
+		worker.SetRankingConfig(conf.CloudflareConfig.Ranking)
 		if *onlySetup {
 			g.Go(func() error {
 				var err error
