@@ -44,7 +44,7 @@ CrowdSec rules are managed in each zone's `http_request_firewall_custom`
 entry-point ruleset and are identified by the `CrowdSec ` description prefix —
 other rules in that ruleset are preserved.
 
-Required Cloudflare token permissions: Zone WAF Write and Lists Write.
+Required Cloudflare token permissions: Zone WAF Read/Write, Account Rulesets Read/Write (or Account WAF Read/Write), and Account Filter Lists Edit.
 Legacy Firewall Rules/Filters created by older versions
 cannot be deleted through the deprecated API; remove them manually in the
 Cloudflare dashboard if they are still present.
