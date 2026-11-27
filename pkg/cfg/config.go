@@ -319,7 +319,6 @@ func ConfigTokens(tokens string, baseConfigPath string) (string, error) {
 				TotalIPListCapacity: &TotalIPListCapacity,
 			})
 
-			api.AccountID = account.ID
 			accountByID[account.ID] = account
 			zones, err := api.ListZones(ctx)
 			if err != nil {

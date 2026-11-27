@@ -3,6 +3,7 @@ package cf
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"strconv"
 	"sync"
 	"testing"
@@ -28,6 +29,7 @@ type mockCloudflareAPI struct {
 	FilterList        []cloudflare.Filter
 	IPListItems       map[string][]cloudflare.IPListItem
 	ZoneList          []cloudflare.Zone
+	EntrypointRuleset cloudflare.Ruleset
 }
 
 func (cfAPI *mockCloudflareAPI) Filters(ctx context.Context, zoneID string, pageOpts cloudflare.PaginationOptions) ([]cloudflare.Filter, error) {
@@ -180,7 +182,16 @@ var dummyCFAccount = cfg.AccountConfig{
 	TotalIPListCapacity: &cfg.TotalIPListCapacity,
 }
 
-var mockCfAPI cloudflareAPI = &mockCloudflareAPI{
+func (cfAPI *mockCloudflareAPI) GetEntrypointRuleset(ctx context.Context, rc *cloudflare.ResourceContainer, phase string) (cloudflare.Ruleset, error) {
+	return cfAPI.EntrypointRuleset, nil
+}
+
+func (cfAPI *mockCloudflareAPI) UpdateEntrypointRuleset(ctx context.Context, rc *cloudflare.ResourceContainer, params cloudflare.UpdateEntrypointRulesetParams) (cloudflare.Ruleset, error) {
+	cfAPI.EntrypointRuleset = cloudflare.Ruleset{Phase: params.Phase, Rules: params.Rules}
+	return cfAPI.EntrypointRuleset, nil
+}
+
+var mockCfAPI = &mockCloudflareAPI{
 	IPLists: []cloudflare.IPList{{
 		ID: "11", Name: "crowdsec_block", Description: "already", CreatedOn: &time.Time{}},
 		{ID: "12", Name: "crowd", CreatedOn: &time.Time{}},
@@ -192,6 +203,20 @@ var mockCfAPI cloudflareAPI = &mockCloudflareAPI{
 		{ID: "zone1"},
 	},
 	IPListItems: make(map[string][]cloudflare.IPListItem),
+}
+
+func TestNoLegacyFirewallAPIInInterface(t *testing.T) {
+	typ := reflect.TypeOf((*cloudflareAPI)(nil)).Elem()
+	for _, name := range []string{
+		"Filters", "FirewallRules", "CreateFirewallRules", "DeleteFirewallRules", "UpdateFilters", "DeleteFilters",
+	} {
+		_, ok := typ.MethodByName(name)
+		require.False(t, ok, "legacy method %s is still in cloudflareAPI", name)
+	}
+	for _, name := range []string{"GetEntrypointRuleset", "UpdateEntrypointRuleset"} {
+		_, ok := typ.MethodByName(name)
+		require.True(t, ok, "ruleset method %s is missing from cloudflareAPI", name)
+	}
 }
 
 func TestIPFirewallSetUp(t *testing.T) {
@@ -217,9 +242,10 @@ func TestIPFirewallSetUp(t *testing.T) {
 
 	require.Empty(t, ipLists[1].Description, "old iplist exists")
 
+	// No legacy firewall rules are created; rules move to the Rulesets API.
 	fr, err := mockCfAPI.FirewallRules(ctx, "", cloudflare.PaginationOptions{})
 	require.NoError(t, err)
-	require.Len(t, fr, 3)
+	require.Len(t, fr, 2)
 }
 
 func TestCollectLAPIStream(t *testing.T) {

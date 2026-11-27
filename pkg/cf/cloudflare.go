@@ -167,21 +167,17 @@ type CloudflareWorker struct {
 
 // this is useful for testing allowing us to mock it.
 type cloudflareAPI interface {
-	Filters(ctx context.Context, zoneID string, pageOpts cloudflare.PaginationOptions) ([]cloudflare.Filter, error)
 	ListZones(ctx context.Context, z ...string) ([]cloudflare.Zone, error)
 	CreateIPList(ctx context.Context, accountID string, name string, desc string, typ string) (cloudflare.IPList, error)
 	DeleteIPList(ctx context.Context, accountID string, id string) (cloudflare.IPListDeleteResponse, error)
 	ListIPLists(ctx context.Context, accountID string) ([]cloudflare.IPList, error)
-	CreateFirewallRules(ctx context.Context, zone string, rules []cloudflare.FirewallRule) ([]cloudflare.FirewallRule, error)
-	DeleteFirewallRules(ctx context.Context, zoneID string, firewallRuleIDs []string) error
-	FirewallRules(ctx context.Context, zone string, opts cloudflare.PaginationOptions) ([]cloudflare.FirewallRule, error)
-	DeleteFilters(ctx context.Context, zoneID string, filterIDs []string) error
-	UpdateFilters(ctx context.Context, zoneID string, filters []cloudflare.Filter) ([]cloudflare.Filter, error)
 	ReplaceIPListItemsAsync(ctx context.Context, accountID string, id string, items []cloudflare.IPListItemCreateRequest) (cloudflare.IPListItemCreateResponse, error)
 	GetIPListBulkOperation(ctx context.Context, accountID string, id string) (cloudflare.IPListBulkOperation, error)
 	ListIPListItems(ctx context.Context, accountID string, id string) ([]cloudflare.IPListItem, error)
 	DeleteIPListItems(ctx context.Context, accountID string, id string, items cloudflare.IPListItemDeleteRequest) (
 		[]cloudflare.IPListItem, error)
+	GetEntrypointRuleset(ctx context.Context, rc *cloudflare.ResourceContainer, phase string) (cloudflare.Ruleset, error)
+	UpdateEntrypointRuleset(ctx context.Context, rc *cloudflare.ResourceContainer, params cloudflare.UpdateEntrypointRulesetParams) (cloudflare.Ruleset, error)
 }
 
 func normalizeDecisionValue(value string) string {
@@ -262,38 +258,6 @@ func (worker *CloudflareWorker) getAPI() cloudflareAPI {
 	return worker.API
 }
 
-func (worker *CloudflareWorker) deleteRulesContainingStringFromZoneIDs(str string, zonesIDs []string) error {
-	for _, zoneID := range zonesIDs {
-		zoneLogger := worker.Logger.WithFields(log.Fields{"zone_id": zoneID})
-		zoneLock, err := worker.getMutexByZoneID(zoneID)
-		if err == nil {
-			zoneLock.Lock()
-			defer zoneLock.Unlock()
-		}
-		rules, err := worker.getAPI().FirewallRules(worker.Ctx, zoneID, cloudflare.PaginationOptions{})
-		if err != nil {
-			return err
-		}
-		deleteRules := make([]string, 0)
-
-		for _, rule := range rules {
-			if strings.Contains(rule.Filter.Expression, str) {
-				deleteRules = append(deleteRules, rule.ID)
-			}
-		}
-
-		if len(deleteRules) > 0 {
-			err = worker.getAPI().DeleteFirewallRules(worker.Ctx, zoneID, deleteRules)
-			if err != nil {
-				return err
-			}
-			zoneLogger.Infof("deleted %d firewall rules containing the string %s", len(deleteRules), str)
-		}
-
-	}
-	return nil
-}
-
 func getIPListNameWithPrefixForAction(prefix string, action string) string {
 	return fmt.Sprintf("%s_%s", prefix, action)
 }
@@ -316,74 +280,8 @@ func (worker *CloudflareWorker) importExistingIPLists() error {
 	return nil
 }
 
-func (worker *CloudflareWorker) importRulesAndFiltersForExistingIPList(IPListName string) error {
-	for _, zone := range worker.Account.ZoneConfigs {
-		rules, err := worker.cachedFirewallRules(zone.ID)
-		if err != nil {
-			return err
-		}
-		for action, state := range worker.CFStateByAction {
-			for _, rule := range rules {
-				if state == nil || state.IPListState.IPList == nil || state.IPListState.IPList.Name == "" {
-					continue
-				}
-				if strings.Contains(rule.Description, fmt.Sprintf("CrowdSec %s rule", action)) &&
-					strings.Contains(rule.Filter.Expression, state.IPListState.IPList.Name) {
-					worker.Logger.WithField("zone_id", zone.ID).Infof("found existing rule for %s action", action)
-					worker.CFStateByAction[action].FilterIDByZoneID[zone.ID] = rule.Filter.ID
-					worker.CFStateByAction[action].CurrExpr = rule.Filter.Expression
-				}
-			}
-		}
-
-	}
-	return nil
-}
-
 func (worker *CloudflareWorker) importExistingInfra() error {
-	if err := worker.importExistingIPLists(); err != nil {
-		return err
-	}
-	for _, state := range worker.CFStateByAction {
-		if state.IPListState.IPList != nil {
-			if err := worker.importRulesAndFiltersForExistingIPList(state.IPListState.IPList.Name); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}
-
-func (worker *CloudflareWorker) deleteFiltersContainingStringFromZoneIDs(str string, zonesIDs []string) error {
-	for _, zoneID := range zonesIDs {
-		zoneLogger := worker.Logger.WithFields(log.Fields{"zone_id": zoneID})
-		zoneLock, err := worker.getMutexByZoneID(zoneID)
-		if err == nil {
-			zoneLock.Lock()
-			defer zoneLock.Unlock()
-		}
-		filters, err := worker.getAPI().Filters(worker.Ctx, zoneID, cloudflare.PaginationOptions{})
-		if err != nil {
-			return err
-		}
-		deleteFilters := make([]string, 0)
-		for _, filter := range filters {
-			if strings.Contains(filter.Expression, str) {
-				deleteFilters = append(deleteFilters, filter.ID)
-				zoneLogger.Infof("deleting %s filter with expression %s", filter.ID, filter.Expression)
-			}
-		}
-
-		if len(deleteFilters) > 0 {
-			zoneLogger.Infof("deleting %d filters", len(deleteFilters))
-			err = worker.getAPI().DeleteFilters(worker.Ctx, zoneID, deleteFilters)
-			if err != nil {
-				return err
-			}
-		}
-
-	}
-	return nil
+	return worker.importExistingIPLists()
 }
 
 func (worker *CloudflareWorker) DeleteExistingIPList() error {
@@ -396,12 +294,6 @@ func (worker *CloudflareWorker) DeleteExistingIPList() error {
 		if !strings.Contains(IPList.Description, "IP list by crowdsec") {
 			continue
 		}
-		worker.Logger.Infof("removing %s ip list", IPList.Name)
-		err = worker.removeIPListDependencies(IPList.Name)
-		if err != nil {
-			return err
-		}
-
 		worker.Logger.Infof("deleting ip list %s", IPList.Name)
 		_, err = worker.getAPI().DeleteIPList(worker.Ctx, worker.Account.ID, IPList.ID)
 		if err != nil {
@@ -411,7 +303,6 @@ func (worker *CloudflareWorker) DeleteExistingIPList() error {
 	return nil
 }
 
-// cached cachedListZones
 func (worker *CloudflareWorker) cachedListZones() ([]cloudflare.Zone, error) {
 	if len(worker.Zones) != 0 {
 		return worker.Zones, nil
@@ -422,47 +313,6 @@ func (worker *CloudflareWorker) cachedListZones() ([]cloudflare.Zone, error) {
 	}
 	worker.Zones = zones
 	return zones, nil
-}
-
-func (worker *CloudflareWorker) cachedFirewallRules(zoneID string) ([]cloudflare.FirewallRule, error) {
-	if worker.FirewallRulesByZoneID[zoneID] != nil {
-		return *worker.FirewallRulesByZoneID[zoneID], nil
-	}
-	rules, err := worker.getAPI().FirewallRules(worker.Ctx, zoneID, cloudflare.PaginationOptions{})
-	if err != nil {
-		return nil, err
-	}
-	worker.FirewallRulesByZoneID[zoneID] = &rules
-	return rules, err
-}
-
-func (worker *CloudflareWorker) removeIPListDependencies(IPListName string) error {
-	worker.Logger.Info("removing ip list dependencies")
-	worker.Logger.Info("listing zones")
-	zones, err := worker.cachedListZones()
-	if err != nil {
-		return err
-	}
-
-	zoneIDs := make([]string, len(zones))
-	for i, zone := range zones {
-		zoneIDs[i] = zone.ID
-	}
-
-	worker.Logger.Infof("found %d zones on this account", len(zones))
-	worker.Logger.Infof("deleting rules containing $%s", IPListName)
-	err = worker.deleteRulesContainingStringFromZoneIDs(fmt.Sprintf("$%s", IPListName), zoneIDs)
-	if err != nil {
-		return err
-	}
-	// A Filter can exist on it's own, they are not visible on UI, they are API only.
-	// Clear these Filters.
-	worker.Logger.Infof("deleting filters containing $%s", IPListName)
-	err = worker.deleteFiltersContainingStringFromZoneIDs(fmt.Sprintf("$%s", IPListName), zoneIDs)
-	if err != nil {
-		return err
-	}
-	return nil
 }
 
 // nolint: unused
@@ -494,29 +344,6 @@ func (worker *CloudflareWorker) createMissingIPLists() error {
 		worker.CFStateByAction[action].IPListState.IPSet = make(map[string]IPSetItem)
 		worker.CFStateByAction[action].UpdateExpr()
 	}
-	return nil
-}
-
-func (worker *CloudflareWorker) createMissingRules() error {
-	for _, zone := range worker.Account.ZoneConfigs {
-		zoneLogger := worker.Logger.WithFields(log.Fields{"zone_id": zone.ID})
-		for _, action := range zone.Actions {
-			if worker.CFStateByAction[action].FilterIDByZoneID[zone.ID] != "" {
-				zoneLogger.Info("skipping rule creation for " + action)
-				continue
-			}
-			ruleExpression := worker.CFStateByAction[action].CurrExpr
-			firewallRules := []cloudflare.FirewallRule{{Filter: cloudflare.Filter{Expression: ruleExpression}, Action: action, Description: fmt.Sprintf("CrowdSec %s rule", action)}}
-			rule, err := worker.getAPI().CreateFirewallRules(worker.Ctx, zone.ID, firewallRules)
-			if err != nil {
-				worker.Logger.WithFields(log.Fields{"zone_id": zone.ID}).Errorf("error %s in creating firewall rule %s", err.Error(), ruleExpression)
-				return err
-			}
-			worker.CFStateByAction[action].FilterIDByZoneID[zone.ID] = rule[0].Filter.ID
-			zoneLogger.Infof("created firewall rule for %s action", action)
-		}
-	}
-	worker.Logger.Info("setup of firewall rules complete")
 	return nil
 }
 
@@ -672,11 +499,6 @@ func (worker *CloudflareWorker) SetUpCloudflareResources() error {
 		return err
 	}
 	worker.Logger.Debug("ip list setup complete")
-	err = worker.createMissingRules()
-	if err != nil {
-		worker.Logger.Error(err.Error())
-		return err
-	}
 	return nil
 }
 
@@ -928,31 +750,8 @@ func (worker *CloudflareWorker) DeleteCountryBans() error {
 	return nil
 }
 
+// UpdateRules is implemented with the Rulesets API in Task 5.
 func (worker *CloudflareWorker) UpdateRules() error {
-	for action, state := range worker.CFStateByAction {
-		if !worker.CFStateByAction[action].UpdateExpr() {
-			// expression is still same, why bother.
-			worker.Logger.Debugf("rule for %s action is unchanged", action)
-			continue
-		}
-		for _, zone := range worker.Account.ZoneConfigs {
-			zoneLogger := worker.Logger.WithFields(log.Fields{"zone_id": zone.ID})
-			updatedFilters := make([]cloudflare.Filter, 0)
-			if _, ok := zone.ActionSet[action]; ok {
-				// check whether this action is supported by this zone
-				updatedFilters = append(updatedFilters, cloudflare.Filter{ID: state.FilterIDByZoneID[zone.ID], Expression: state.CurrExpr})
-			}
-			if len(updatedFilters) > 0 {
-				zoneLogger.Infof("updating %d rules", len(updatedFilters))
-				_, err := worker.getAPI().UpdateFilters(worker.Ctx, zone.ID, updatedFilters)
-				if err != nil {
-					return err
-				}
-			} else {
-				zoneLogger.Debug("rules are same")
-			}
-		}
-	}
 	return nil
 }
 
