@@ -116,6 +116,14 @@ cloudflare_config:
 log_mode: stdout
 `
 
+func TestTopLevelRankingAlias(t *testing.T) {
+	yaml := "ranking:\n  origin_scores:\n    cscli: 20\n" + minimalConfigYAML
+	config, err := NewConfig(strings.NewReader(yaml))
+	require.NoError(t, err)
+	require.Equal(t, 20, config.CloudflareConfig.Ranking.OriginScores["cscli"])
+	require.Equal(t, 10, config.CloudflareConfig.Ranking.OriginScores["CAPI"])
+}
+
 func TestLegacyLogMaxBackupsAlias(t *testing.T) {
 	yaml := strings.Replace(minimalConfigYAML, "log_mode: stdout", "log_mode: stdout\nlog_max_backups: 7", 1)
 	config, err := NewConfig(strings.NewReader(yaml))

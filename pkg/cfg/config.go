@@ -60,6 +60,38 @@ func expandYear(pattern string) string {
 	return strings.ReplaceAll(pattern, "{{YEAR}}", strconv.Itoa(time.Now().Year()))
 }
 
+func mergeRankingConfig(base, override RankingConfig) RankingConfig {
+	if len(override.Patterns) > 0 {
+		base.Patterns = override.Patterns
+	}
+	if override.DefaultScore != 0 {
+		base.DefaultScore = override.DefaultScore
+	}
+	if override.DurationBonusPerHour != 0 {
+		base.DurationBonusPerHour = override.DurationBonusPerHour
+	}
+	if override.DurationBonusMax != 0 {
+		base.DurationBonusMax = override.DurationBonusMax
+	}
+	if len(override.TypeScores) > 0 {
+		if base.TypeScores == nil {
+			base.TypeScores = make(map[string]int)
+		}
+		for key, value := range override.TypeScores {
+			base.TypeScores[key] = value
+		}
+	}
+	if len(override.OriginScores) > 0 {
+		if base.OriginScores == nil {
+			base.OriginScores = make(map[string]int)
+		}
+		for key, value := range override.OriginScores {
+			base.OriginScores[key] = value
+		}
+	}
+	return base
+}
+
 func validateRankingConfig(ranking RankingConfig) error {
 	if ranking.DefaultScore < 0 {
 		return fmt.Errorf("ranking.default_score must be non-negative")
@@ -199,6 +231,7 @@ type bouncerConfig struct {
 	ExcludeScenariosContaining  []string         `yaml:"exclude_scenarios_containing"`
 	OnlyIncludeDecisionsFrom    []string         `yaml:"only_include_decisions_from"`
 	CloudflareConfig            CloudflareConfig `yaml:"cloudflare_config"`
+	Ranking                     RankingConfig    `yaml:"ranking"` // top-level alias
 	Unifi                       UnifiConfig      `yaml:"unifi"`
 	Daemon                      bool             `yaml:"daemon"`
 	Logging                     LoggingConfig    `yaml:",inline"`
@@ -367,6 +400,7 @@ func NewConfig(reader io.Reader) (*bouncerConfig, error) {
 	if config.Logging.LogMaxFiles == 0 && config.Logging.LogMaxBackups > 0 {
 		config.Logging.LogMaxFiles = config.Logging.LogMaxBackups
 	}
+	config.CloudflareConfig.Ranking = mergeRankingConfig(config.CloudflareConfig.Ranking, config.Ranking)
 	if err := resolveSecretFiles(config); err != nil {
 		return nil, err
 	}
