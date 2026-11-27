@@ -145,6 +145,7 @@ func TestNewConfigUnifiValidation(t *testing.T) {
 }
 
 func TestNewConfigUnifiEnabled(t *testing.T) {
+	t.Setenv("UNIFI_PASSWORD", "secret")
 	yaml := `unifi:
   enabled: true
   url: https://10.0.24.1
