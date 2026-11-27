@@ -14,170 +14,120 @@ import (
 
 func testConfig(url string) cfg.UnifiConfig {
 	return cfg.UnifiConfig{
+		Enabled:            true,
+		Mode:               "local",
 		URL:                url,
+		APIKey:             "test-api-key",
 		Site:               "default",
-		Username:           "admin",
-		Password:           "secret",
-		GroupName:          "CrowdSec_Block",
+		ListName:           "CrowdSec_Blocklist",
 		MaxItems:           10000,
 		InsecureSkipVerify: true,
 	}
-}
-
-func TestLoginStoresCookieAndCSRF(t *testing.T) {
-	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		require.Equal(t, "/api/auth/login", r.URL.Path)
-		var payload map[string]string
-		require.NoError(t, json.NewDecoder(r.Body).Decode(&payload))
-		require.Equal(t, "admin", payload["username"])
-		require.Equal(t, "secret", payload["password"])
-		http.SetCookie(w, &http.Cookie{Name: "TOKEN", Value: "abc"})
-		w.Header().Set("X-CSRF-Token", "csrf123")
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer server.Close()
-
-	c := New(testConfig(server.URL))
-	require.NoError(t, c.login(context.Background()))
-	require.Equal(t, "abc", c.token)
-	require.Equal(t, "csrf123", c.csrf)
-}
-
-func TestDoReloginOn401(t *testing.T) {
-	logins := 0
-	getCount := 0
-	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api/auth/login" {
-			logins++
-			http.SetCookie(w, &http.Cookie{Name: "TOKEN", Value: "abc"})
-			w.Header().Set("X-CSRF-Token", "csrf123")
-			w.WriteHeader(http.StatusOK)
-			return
-		}
-		getCount++
-		require.Equal(t, "TOKEN=abc", r.Header.Get("Cookie"))
-		require.Equal(t, "csrf123", r.Header.Get("X-CSRF-Token"))
-		if getCount == 1 {
-			w.WriteHeader(http.StatusUnauthorized)
-			return
-		}
-		_, _ = w.Write([]byte(`{"meta":{"rc":"ok"},"data":[]}`))
-	}))
-	defer server.Close()
-
-	c := New(testConfig(server.URL))
-	var out struct {
-		Meta struct{ RC string `json:"rc"` } `json:"meta"`
-	}
-	require.NoError(t, c.do(context.Background(), http.MethodGet, "/api/s/default/rest/firewallgroup", nil, &out))
-	require.Equal(t, "ok", out.Meta.RC)
-	require.Equal(t, 2, logins)
-	require.Equal(t, 2, getCount)
 }
 
 func TestPrepareMembers(t *testing.T) {
 	got := prepareMembers([]string{
 		"1.2.3.4", "1.2.3.4/32", "2001:db8::/64", "5.6.7.0/24", "1.2.3.4",
 	}, 10000)
-	require.Equal(t, []string{"1.2.3.4", "5.6.7.0/24"}, got)
+	require.Equal(t, []map[string]string{
+		{"type": "IP_ADDRESS", "value": "1.2.3.4"},
+		{"type": "SUBNET", "value": "5.6.7.0/24"},
+	}, got)
 
 	got = prepareMembers([]string{"1.2.3.4", "5.6.7.0/24", "9.9.9.9"}, 1)
-	require.Equal(t, []string{"1.2.3.4"}, got)
+	require.Len(t, got, 1)
 }
 
-func loginHandler(w http.ResponseWriter, r *http.Request) {
-	http.SetCookie(w, &http.Cookie{Name: "TOKEN", Value: "abc"})
-	w.Header().Set("X-CSRF-Token", "csrf123")
-	_, _ = w.Write([]byte(`{}`))
-}
-
-func TestSyncGroupCreatesAndUpdates(t *testing.T) {
-	created, updated := false, false
+func TestSyncGroupCreatesAndUpdatesWithAPIKey(t *testing.T) {
+	created := false
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api/auth/login" {
-			loginHandler(w, r)
+		require.Equal(t, "test-api-key", r.Header.Get("X-API-Key"))
+		if r.URL.Path == "/proxy/network/integration/v1/sites" {
+			_, _ = w.Write([]byte(`{"data":[{"id":"site-uuid","name":"default","internalReference":"default"}],"totalCount":1}`))
 			return
 		}
 		if r.Method == http.MethodGet {
 			data := "[]"
 			if created {
-				data = `[{"_id":"g1","name":"CrowdSec_Block","group_type":"address-group","group_members":["1.1.1.1"],"site_id":"siteid"}]`
+				data = `[{"id":"list-uuid","name":"CrowdSec_Blocklist","type":"IPV4_ADDRESSES"}]`
 			}
-			_, _ = w.Write([]byte(`{"meta":{"rc":"ok"},"data":` + data + `}`))
+			_, _ = w.Write([]byte(`{"data":` + data + `,"totalCount":1}`))
 			return
 		}
 		var payload map[string]any
 		require.NoError(t, json.NewDecoder(r.Body).Decode(&payload))
-		require.Equal(t, "address-group", payload["group_type"])
+		require.Equal(t, "IPV4_ADDRESSES", payload["type"])
 		if r.Method == http.MethodPost {
 			created = true
-			require.Equal(t, "/api/s/default/rest/firewallgroup", r.URL.Path)
+			require.Equal(t, "/proxy/network/integration/v1/sites/site-uuid/traffic-matching-lists", r.URL.Path)
+			w.WriteHeader(http.StatusCreated)
 		} else {
-			updated = true
-			require.Equal(t, "/api/s/default/rest/firewallgroup/g1", r.URL.Path)
-			require.Equal(t, "g1", payload["_id"])
-			require.Equal(t, "siteid", payload["site_id"])
+			require.Equal(t, "/proxy/network/integration/v1/sites/site-uuid/traffic-matching-lists/list-uuid", r.URL.Path)
 		}
-		_, _ = w.Write([]byte(`{"meta":{"rc":"ok"},"data":[{}]}`))
+		_, _ = w.Write([]byte(`{"id":"list-uuid","name":"CrowdSec_Blocklist","type":"IPV4_ADDRESSES"}`))
 	}))
 	defer server.Close()
 
-	c := New(testConfig(server.URL))
-	require.NoError(t, c.SyncGroup(context.Background(), []string{"1.1.1.1"}))
+	client, err := New(testConfig(server.URL))
+	require.NoError(t, err)
+	require.NoError(t, client.SyncGroup(context.Background(), []string{"1.1.1.1"}))
 	require.True(t, created)
-	require.False(t, updated)
-	require.NoError(t, c.SyncGroup(context.Background(), []string{"2.2.2.2"}))
-	require.True(t, updated)
+	require.NoError(t, client.SyncGroup(context.Background(), []string{"2.2.2.2"}))
 }
 
-func TestSyncGroupEmptyMembers(t *testing.T) {
-	putCalled := false
+func TestSyncGroupEmptyUsesPlaceholder(t *testing.T) {
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api/auth/login" {
-			loginHandler(w, r)
+		if r.URL.Path == "/proxy/network/integration/v1/sites" {
+			_, _ = w.Write([]byte(`{"data":[{"id":"site-uuid","name":"default","internalReference":"default"}],"totalCount":1}`))
 			return
 		}
 		if r.Method == http.MethodGet {
-			_, _ = w.Write([]byte(`{"meta":{"rc":"ok"},"data":[{"_id":"g1","name":"CrowdSec_Block","site_id":"siteid"}]}`))
+			_, _ = w.Write([]byte(`{"data":[{"id":"list-uuid","name":"CrowdSec_Blocklist","type":"IPV4_ADDRESSES"}],"totalCount":1}`))
 			return
 		}
-		putCalled = true
-		var payload map[string]any
+		var payload struct {
+			Items []map[string]string `json:"items"`
+		}
 		require.NoError(t, json.NewDecoder(r.Body).Decode(&payload))
-		members, ok := payload["group_members"].([]any)
-		require.True(t, ok)
-		require.Empty(t, members)
-		w.WriteHeader(http.StatusBadRequest)
+		require.Equal(t, []map[string]string{{"type": "IP_ADDRESS", "value": "192.0.2.1"}}, payload.Items)
+		_, _ = w.Write([]byte(`{"id":"list-uuid","name":"CrowdSec_Blocklist","type":"IPV4_ADDRESSES"}`))
 	}))
 	defer server.Close()
 
-	c := New(testConfig(server.URL))
-	require.Error(t, c.SyncGroup(context.Background(), nil))
-	require.True(t, putCalled)
+	client, err := New(testConfig(server.URL))
+	require.NoError(t, err)
+	require.NoError(t, client.SyncGroup(context.Background(), nil))
 }
 
-func TestSyncGroupRejectsNonOkMeta(t *testing.T) {
+func TestResolveSitePaginates(t *testing.T) {
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api/auth/login" {
-			loginHandler(w, r)
+		if r.URL.Query().Get("offset") == "0" {
+			_, _ = w.Write([]byte(`{"data":[{"id":"other","name":"Other","internalReference":"other"}],"totalCount":2}`))
 			return
 		}
-		_, _ = w.Write([]byte(`{"meta":{"rc":"error"},"data":[]}`))
+		_, _ = w.Write([]byte(`{"data":[{"id":"site-uuid","name":"default","internalReference":"default"}],"totalCount":2}`))
 	}))
 	defer server.Close()
 
-	c := New(testConfig(server.URL))
-	require.ErrorContains(t, c.SyncGroup(context.Background(), []string{"1.1.1.1"}), "rc")
+	client, err := New(testConfig(server.URL))
+	require.NoError(t, err)
+	siteID, err := client.resolveSite(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, "site-uuid", siteID)
 }
 
-func TestDoFailsWhenLoginFails(t *testing.T) {
-	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusUnauthorized)
-	}))
-	defer server.Close()
+func TestCloudBaseURL(t *testing.T) {
+	config := testConfig("")
+	config.Mode = "cloud"
+	config.ConsoleID = "console-id"
+	client, err := New(config)
+	require.NoError(t, err)
+	require.Equal(t, "https://api.ui.com/v1/connector/consoles/console-id/proxy/network/integration/v1", client.baseURL())
+}
 
-	c := New(testConfig(server.URL))
-	err := c.do(context.Background(), http.MethodGet, "/api/s/default/rest/firewallgroup", nil, nil)
+func TestNewRejectsBadCAFile(t *testing.T) {
+	config := testConfig("https://example.test")
+	config.CAFile = "/does/not/exist"
+	_, err := New(config)
 	require.Error(t, err)
-	require.NotContains(t, err.Error(), "secret")
 }

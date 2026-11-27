@@ -36,24 +36,26 @@ The `ranking` block in the config is fully tunable; a `{{YEAR}}` token in a
 pattern is expanded to the current year. An invalid regex or negative score
 fails config validation at startup.
 
-## UniFi Dream Machine Pro sync (optional)
+## UniFi sync (optional, official API key)
 
-Set `unifi.enabled: true` and fill in the UDM Pro URL, site, and a dedicated
-local account. On each `unifi.update_frequency` tick (default `5m`) the bouncer
-replaces the members of one IPv4 address group with the same ranked blocklist
-used for Cloudflare. Only IPv4 addresses and CIDRs are written; `/32` is
-collapsed to a bare address, and the group is capped at `max_items` (10,000).
+Set `unifi.enabled: true` and configure a UniFi OS console (`mode: local`) or
+the cloud connector (`mode: cloud`). Generate an API key at `unifi.ui.com` and
+provide it via `api_key` or `api_key_file`. On each `unifi.update_frequency`
+tick (default `5m`) the bouncer creates or replaces one IPv4 **Traffic Matching
+List** with the same ranked blocklist used for Cloudflare. Only IPv4 addresses
+and CIDRs are written; `/32` is collapsed to a bare address, and the list is
+capped at `max_items` (10,000).
 
-You create the firewall rule **once** in UniFi Network: Settings → Routing &
-Firewall → Firewall, a WAN IN / traffic rule whose source is the
-`CrowdSec_Block` address group and whose action is Drop. The bouncer only
-manages group membership — it never creates or modifies rules.
+Create one firewall policy **once** in UniFi Network whose source references the
+`CrowdSec_Blocklist` Traffic Matching List and whose action is Block. The
+bouncer only manages list membership — it never creates or modifies policies.
+This works across UniFi OS consoles, not only UDM Pro. Legacy self-hosted
+controllers without the official API-key integration endpoint are not
+supported.
 
-UniFi's controller API is unofficial and session-based; the bouncer logs in
-with the cookie/CSRF flow and re-authenticates on 401. Failures are logged and
-retried on the next tick, and never stop Cloudflare updates. Use a dedicated
-local UniFi user, and pass the password via `${UNIFI_PASSWORD}` rather than
-storing it in plain text.
+TLS verification is on by default. For a private/self-signed CA, set `ca_file`;
+use `insecure_skip_verify: true` only as an explicit last resort. Plain HTTP
+requires `allow_insecure_http: true`.
 
 ## Inspecting the blocklist and secrets from files
 
@@ -70,7 +72,7 @@ use an `{account}` token in the path, e.g.
 
 Sensitive values can be read from mounted files instead of inline YAML:
 `crowdsec_lapi_key_file`, `token_file` under an account, and
-`unifi.password_file`. Setting both a value and its `_file` variant is a
+`unifi.api_key_file`. Setting both a value and its `_file` variant is a
 config error.
 
 ## Pinning the container image

@@ -56,16 +56,21 @@ cloudflare_config:
       cscli: 0
       lists: 0
 
-# Optional UniFi Dream Machine Pro blocklist sync. Disabled by default.
+# Optional UniFi sync using the official API-key Network API.
+# Create one firewall policy in UniFi that references this Traffic Matching List.
 unifi:
   enabled: false
+  mode: local # local UniFi OS console, or cloud connector
   url: https://10.0.24.1
+  console_id: # required only for mode: cloud
+  api_key: ${UNIFI_API_KEY}
+  # api_key_file: /run/secrets/unifi_api_key
   site: default
-  username: <unifi_local_user>
-  password: ${UNIFI_PASSWORD}
-  group_name: CrowdSec_Block
+  list_name: CrowdSec_Blocklist
   max_items: 10000
-  insecure_skip_verify: true
+  insecure_skip_verify: false
+  ca_file: # optional private/self-signed CA
+  allow_insecure_http: false
   update_frequency: 5m
 
 # Bouncer Config

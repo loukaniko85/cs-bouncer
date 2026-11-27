@@ -59,15 +59,15 @@ func TestNewConfig(t *testing.T) {
 					MaxCountryDecisions: 200,
 					MaxASDecisions:      200,
 				},
-				Unifi:    defaultUnifiConfig(),
-				Daemon:   false,
+				Unifi:  defaultUnifiConfig(),
+				Daemon: false,
 				Logging: LoggingConfig{
-					LogMode:  "stdout",
-					LogDir:   "/var/log/",
-					LogLevel: ptr.Of(log.InfoLevel),
-					LogMaxSize: 40,
-					LogMaxFiles: 3,
-					LogMaxAge: 30,
+					LogMode:      "stdout",
+					LogDir:       "/var/log/",
+					LogLevel:     ptr.Of(log.InfoLevel),
+					LogMaxSize:   40,
+					LogMaxFiles:  3,
+					LogMaxAge:    30,
 					CompressLogs: ptr.Of(true),
 				},
 			},
@@ -200,7 +200,7 @@ func TestSecretFiles(t *testing.T) {
 	}
 	lapiFile := write("lapi", "lapi-from-file")
 	tokenFile := write("token", "token-from-file")
-	passwordFile := write("password", "password-from-file")
+	apiKeyFile := write("api-key", "api-key-from-file")
 
 	yaml := fmt.Sprintf(`crowdsec_lapi_url: http://localhost:8080/
 crowdsec_lapi_key_file: %s
@@ -215,14 +215,13 @@ cloudflare_config:
 unifi:
   enabled: true
   url: https://10.0.24.1
-  username: admin
-  password_file: %s
-`, lapiFile, tokenFile, passwordFile)
+  api_key_file: %s
+`, lapiFile, tokenFile, apiKeyFile)
 	c, err := NewConfig(strings.NewReader(yaml))
 	require.NoError(t, err)
 	require.Equal(t, "lapi-from-file", c.CrowdSecLAPIKey)
 	require.Equal(t, "token-from-file", c.CloudflareConfig.Accounts[0].Token)
-	require.Equal(t, "password-from-file", c.Unifi.Password)
+	require.Equal(t, "api-key-from-file", c.Unifi.APIKey)
 
 	both := strings.Replace(yaml, "crowdsec_lapi_key_file:", "crowdsec_lapi_key: inline\ncrowdsec_lapi_key_file:", 1)
 	_, err = NewConfig(strings.NewReader(both))
@@ -238,7 +237,7 @@ func TestStateFileDefaultAndOverride(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, c.StateFile)
 
-	c, err = NewConfig(strings.NewReader("state_file: /var/lib/cs/state_{account}.json\n"+minimalConfigYAML))
+	c, err = NewConfig(strings.NewReader("state_file: /var/lib/cs/state_{account}.json\n" + minimalConfigYAML))
 	require.NoError(t, err)
 	require.Equal(t, "/var/lib/cs/state_{account}.json", c.StateFile)
 }
@@ -248,7 +247,7 @@ func TestNewConfigUnifiDefaults(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, c.Unifi.Enabled)
 	require.Equal(t, "default", c.Unifi.Site)
-	require.Equal(t, "CrowdSec_Block", c.Unifi.GroupName)
+	require.Equal(t, "CrowdSec_Blocklist", c.Unifi.ListName)
 	require.Equal(t, 10000, c.Unifi.MaxItems)
 	require.Equal(t, 5*time.Minute, c.Unifi.UpdateFrequency)
 	require.False(t, c.Unifi.InsecureSkipVerify)
@@ -260,11 +259,11 @@ func TestNewConfigUnifiValidation(t *testing.T) {
 		patch   string
 		wantErr string
 	}{
-		{"missing url", "unifi:\n  enabled: true\n  username: u\n  password: p\n", "unifi.url"},
-		{"missing username", "unifi:\n  enabled: true\n  url: https://10.0.24.1\n  password: p\n", "unifi.username"},
-		{"missing password", "unifi:\n  enabled: true\n  url: https://10.0.24.1\n  username: u\n", "unifi.password"},
-		{"zero max items", "unifi:\n  enabled: true\n  url: https://10.0.24.1\n  username: u\n  password: p\n  max_items: 0\n", "unifi.max_items"},
-		{"zero frequency", "unifi:\n  enabled: true\n  url: https://10.0.24.1\n  username: u\n  password: p\n  update_frequency: 0s\n", "unifi.update_frequency"},
+		{"missing url", "unifi:\n  enabled: true\n  api_key: k\n", "unifi.url"},
+		{"missing api key", "unifi:\n  enabled: true\n  url: https://10.0.24.1\n", "unifi.api_key"},
+		{"missing console id", "unifi:\n  enabled: true\n  mode: cloud\n  api_key: k\n", "unifi.console_id"},
+		{"zero max items", "unifi:\n  enabled: true\n  url: https://10.0.24.1\n  api_key: k\n  max_items: 0\n", "unifi.max_items"},
+		{"zero frequency", "unifi:\n  enabled: true\n  url: https://10.0.24.1\n  api_key: k\n  update_frequency: 0s\n", "unifi.update_frequency"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -276,13 +275,12 @@ func TestNewConfigUnifiValidation(t *testing.T) {
 }
 
 func TestNewConfigUnifiEnabled(t *testing.T) {
-	t.Setenv("UNIFI_PASSWORD", "secret")
+	t.Setenv("UNIFI_API_KEY", "secret")
 	yaml := `unifi:
   enabled: true
   url: https://10.0.24.1
-  username: admin
-  password: ${UNIFI_PASSWORD}
-  group_name: My_Block
+  api_key: ${UNIFI_API_KEY}
+  list_name: My_Block
   max_items: 500
   update_frequency: 10m
   insecure_skip_verify: false
@@ -291,11 +289,11 @@ func TestNewConfigUnifiEnabled(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, c.Unifi.Enabled)
 	require.Equal(t, "https://10.0.24.1", c.Unifi.URL)
-	require.Equal(t, "My_Block", c.Unifi.GroupName)
+	require.Equal(t, "My_Block", c.Unifi.ListName)
 	require.Equal(t, 500, c.Unifi.MaxItems)
 	require.Equal(t, 10*time.Minute, c.Unifi.UpdateFrequency)
 	require.False(t, c.Unifi.InsecureSkipVerify)
-	require.Equal(t, "secret", c.Unifi.Password)
+	require.Equal(t, "secret", c.Unifi.APIKey)
 }
 
 func TestNewConfigRankingDefaults(t *testing.T) {

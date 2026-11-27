@@ -268,10 +268,14 @@ func Execute() error {
 		for _, account := range conf.CloudflareConfig.Accounts {
 			accountIDs = append(accountIDs, account.ID)
 		}
+		client, err := unifi.New(conf.Unifi)
+		if err != nil {
+			return err
+		}
 		coordinator = &blocklistCoordinator{
 			byAccount: make(map[string][]string),
 			expected:  accountIDs,
-			client:    unifi.New(conf.Unifi),
+			client:    client,
 		}
 	}
 	// events are used to forward deltas and weekly snapshots to all workers
@@ -339,11 +343,11 @@ func Execute() error {
 			Origins:                strings.Join(conf.OnlyIncludeDecisionsFrom, ","),
 		}
 		csLAPI = &csbouncer.StreamBouncer{
-			APIKey:         conf.CrowdSecLAPIKey,
-			APIUrl:         conf.CrowdSecLAPIUrl,
-			TickerInterval: conf.CrowdsecUpdateFrequencyYAML,
-			UserAgent:      fmt.Sprintf("%s/%s", name, version.String()),
-			Opts: streamOpts,
+			APIKey:             conf.CrowdSecLAPIKey,
+			APIUrl:             conf.CrowdSecLAPIUrl,
+			TickerInterval:     conf.CrowdsecUpdateFrequencyYAML,
+			UserAgent:          fmt.Sprintf("%s/%s", name, version.String()),
+			Opts:               streamOpts,
 			CertPath:           conf.CertPath,
 			KeyPath:            conf.KeyPath,
 			CAPath:             conf.CAPath,

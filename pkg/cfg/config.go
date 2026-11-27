@@ -116,12 +116,13 @@ type CloudflareConfig struct {
 }
 type UnifiConfig struct {
 	Enabled            bool          `yaml:"enabled"`
+	Mode               string        `yaml:"mode"`
 	URL                string        `yaml:"url"`
+	ConsoleID          string        `yaml:"console_id"`
+	APIKey             string        `yaml:"api_key"`
+	APIKeyFile         string        `yaml:"api_key_file"`
 	Site               string        `yaml:"site"`
-	Username           string        `yaml:"username"`
-	Password           string        `yaml:"password"`
-	PasswordFile       string        `yaml:"password_file"`
-	GroupName          string        `yaml:"group_name"`
+	ListName           string        `yaml:"list_name"`
 	MaxItems           int           `yaml:"max_items"`
 	InsecureSkipVerify bool          `yaml:"insecure_skip_verify"`
 	CAFile             string        `yaml:"ca_file"`
@@ -131,8 +132,9 @@ type UnifiConfig struct {
 
 func defaultUnifiConfig() UnifiConfig {
 	return UnifiConfig{
+		Mode:               "local",
 		Site:               "default",
-		GroupName:          "CrowdSec_Block",
+		ListName:           "CrowdSec_Blocklist",
 		MaxItems:           10000,
 		InsecureSkipVerify: false,
 		UpdateFrequency:    5 * time.Minute,
@@ -143,14 +145,17 @@ func validateUnifiConfig(c UnifiConfig) error {
 	if !c.Enabled {
 		return nil
 	}
-	if c.URL == "" {
-		return fmt.Errorf("unifi.url is required when unifi is enabled")
+	if c.Mode != "local" && c.Mode != "cloud" {
+		return fmt.Errorf("unifi.mode must be local or cloud")
 	}
-	if c.Username == "" {
-		return fmt.Errorf("unifi.username is required when unifi is enabled")
+	if c.Mode == "local" && c.URL == "" {
+		return fmt.Errorf("unifi.url is required when unifi.mode is local")
 	}
-	if c.Password == "" {
-		return fmt.Errorf("unifi.password is required when unifi is enabled")
+	if c.Mode == "cloud" && c.ConsoleID == "" {
+		return fmt.Errorf("unifi.console_id is required when unifi.mode is cloud")
+	}
+	if c.APIKey == "" {
+		return fmt.Errorf("unifi.api_key is required when unifi is enabled")
 	}
 	if c.MaxItems <= 0 {
 		return fmt.Errorf("unifi.max_items must be positive")
@@ -296,15 +301,15 @@ func resolveSecretFiles(config *bouncerConfig) error {
 			account.Token = value
 		}
 	}
-	if config.Unifi.Password != "" && config.Unifi.PasswordFile != "" {
-		return fmt.Errorf("unifi.password and unifi.password_file are mutually exclusive")
+	if config.Unifi.APIKey != "" && config.Unifi.APIKeyFile != "" {
+		return fmt.Errorf("unifi.api_key and unifi.api_key_file are mutually exclusive")
 	}
-	value, err = readSecretFile(config.Unifi.PasswordFile, "unifi.password_file")
+	value, err = readSecretFile(config.Unifi.APIKeyFile, "unifi.api_key_file")
 	if err != nil {
 		return err
 	}
 	if value != "" {
-		config.Unifi.Password = value
+		config.Unifi.APIKey = value
 	}
 	return nil
 }
