@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -187,6 +188,67 @@ type bouncerConfig struct {
 	KeyPath                     string           `yaml:"key_path"`
 	CertPath                    string           `yaml:"cert_path"`
 	CAPath                      string           `yaml:"ca_cert_path"`
+}
+
+// RedactSecrets returns YAML with sensitive inline values masked.
+func RedactSecrets(content []byte) []byte {
+	var document yaml.Node
+	if err := yaml.Unmarshal(content, &document); err != nil {
+		return []byte("***REDACTED***")
+	}
+	sensitive := map[string]bool{
+		"crowdsec_lapi_key": true,
+		"token":             true,
+		"password":          true,
+		"api_key":           true,
+	}
+	var redact func(*yaml.Node)
+	redact = func(node *yaml.Node) {
+		if node.Kind == yaml.MappingNode {
+			for i := 0; i+1 < len(node.Content); i += 2 {
+				key, value := node.Content[i], node.Content[i+1]
+				if sensitive[key.Value] {
+					value.Kind = yaml.ScalarNode
+					value.Tag = "!!str"
+					value.Value = "***REDACTED***"
+					value.Content = nil
+				}
+				redact(value)
+			}
+			return
+		}
+		for _, child := range node.Content {
+			redact(child)
+		}
+	}
+	redact(&document)
+	output, err := yaml.Marshal(&document)
+	if err != nil {
+		return []byte("***REDACTED***")
+	}
+	return output
+}
+
+// WriteConfigFile atomically writes a config file with owner-only permissions.
+func WriteConfigFile(path string, content []byte) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".config-*")
+	if err != nil {
+		return err
+	}
+	name := tmp.Name()
+	defer os.Remove(name)
+	if err := tmp.Chmod(0600); err != nil {
+		tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(content); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(name, path)
 }
 
 func MergedConfig(configPath string) ([]byte, error) {
@@ -449,7 +511,8 @@ func ConfigTokens(tokens string, baseConfigPath string) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		for i, account := range accounts {
+		for _, account := range accounts {
+			accountIndex := len(accountConfig)
 			accountConfig = append(accountConfig, AccountConfig{
 				ID:                  account.ID,
 				ZoneConfigs:         make([]ZoneConfig, 0),
@@ -469,7 +532,7 @@ func ConfigTokens(tokens string, baseConfigPath string) (string, error) {
 			for _, zone := range zones {
 				zoneByID[zone.ID] = zone
 				if zone.Account.ID == account.ID {
-					accountConfig[i].ZoneConfigs = append(accountConfig[i].ZoneConfigs, ZoneConfig{
+					accountConfig[accountIndex].ZoneConfigs = append(accountConfig[accountIndex].ZoneConfigs, ZoneConfig{
 						ID:      zone.ID,
 						Actions: []string{"managed_challenge"},
 					})

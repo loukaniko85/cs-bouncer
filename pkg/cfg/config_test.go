@@ -116,6 +116,32 @@ cloudflare_config:
 log_mode: stdout
 `
 
+func TestRedactSecrets(t *testing.T) {
+	input := []byte(`crowdsec_lapi_key: lapi-secret
+cloudflare_config:
+  accounts:
+  - id: test
+    token: cf-secret
+unifi:
+  password: unifi-secret
+  username: admin
+`)
+	output := string(RedactSecrets(input))
+	require.NotContains(t, output, "lapi-secret")
+	require.NotContains(t, output, "cf-secret")
+	require.NotContains(t, output, "unifi-secret")
+	require.Contains(t, output, "admin")
+	require.Contains(t, output, "REDACTED")
+}
+
+func TestWriteConfigFileUses0600(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	require.NoError(t, WriteConfigFile(path, []byte("secret: value\n")))
+	info, err := os.Stat(path)
+	require.NoError(t, err)
+	require.Equal(t, os.FileMode(0600), info.Mode().Perm())
+}
+
 func TestConfigHardening(t *testing.T) {
 	t.Run("unknown field", func(t *testing.T) {
 		_, err := NewConfig(strings.NewReader("unknown_key: value\n" + minimalConfigYAML))

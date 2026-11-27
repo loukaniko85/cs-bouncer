@@ -71,7 +71,7 @@ func (lrt InterceptLogger) RoundTrip(req *http.Request) (*http.Response, error) 
 		if err != nil {
 			return nil, err
 		}
-		lrt.logger.Debugf("%s %s", req.URL, string(body))
+		lrt.logger.Debugf("%s body_bytes=%d", req.URL, len(body))
 		req.Body = io.NopCloser(&buf)
 	} else {
 		lrt.logger.Debugf("%s", req.URL)

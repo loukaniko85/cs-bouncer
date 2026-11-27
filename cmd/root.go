@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -19,6 +20,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	log "github.com/sirupsen/logrus"
 	"golang.org/x/sync/errgroup"
+	"gopkg.in/natefinch/lumberjack.v2"
 
 	"github.com/crowdsecurity/crowdsec/pkg/apiclient"
 	csbouncer "github.com/crowdsecurity/go-cs-bouncer"
@@ -102,34 +104,30 @@ const (
 	name                = "crowdsec-cloudflare-bouncer"
 )
 
-func HandleSignals(ctx context.Context) error {
+func HandleSignals(ctx context.Context, cancel context.CancelFunc) error {
 	signalChan := make(chan os.Signal, 1)
 	signal.Notify(signalChan, syscall.SIGTERM, os.Interrupt)
+	defer signal.Stop(signalChan)
 
 	select {
-	case s := <-signalChan:
-		switch s {
-		case syscall.SIGTERM:
-			return fmt.Errorf("received SIGTERM")
-		case os.Interrupt: // cross-platform SIGINT
-			return fmt.Errorf("received interrupt")
-		}
+	case <-signalChan:
+		cancel()
+		return nil
 	case <-ctx.Done():
 		return ctx.Err()
 	}
-	return nil
 }
 
 func newAPILogger(logDir string, logAPIRequests *bool) (*log.Logger, error) {
 	APILogger := log.New()
 	if *logAPIRequests {
-		f, err := os.OpenFile(
-			filepath.Join(logDir, "crowdsec-cloudflare-bouncer-api-calls.log"),
-			os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
-		if err != nil {
-			return nil, err
-		}
-		APILogger.SetOutput(f)
+		APILogger.SetOutput(&lumberjack.Logger{
+			Filename:   filepath.Join(logDir, "crowdsec-cloudflare-bouncer-api-calls.log"),
+			MaxSize:    10,
+			MaxBackups: 3,
+			MaxAge:     30,
+			Compress:   true,
+		})
 		APILogger.Level = log.DebugLevel
 	} else {
 		APILogger.SetOutput(io.Discard)
@@ -174,7 +172,7 @@ func Execute() error {
 			return err
 		}
 		if configOutputPath != nil && *configOutputPath != "" {
-			err := os.WriteFile(*configOutputPath, []byte(cfgTokenString), 0664)
+			err := cfg.WriteConfigFile(*configOutputPath, []byte(cfgTokenString))
 			if err != nil {
 				return err
 			}
@@ -191,13 +189,17 @@ func Execute() error {
 	}
 
 	if *showConfig {
-		fmt.Println(string(configBytes))
+		fmt.Println(string(cfg.RedactSecrets(configBytes)))
 		return nil
 	}
 
 	conf, err := cfg.NewConfig(bytes.NewReader(configBytes))
 	if err != nil {
 		return fmt.Errorf("unable to parse config: %w", err)
+	}
+	if *testConfig {
+		log.Info("config is valid")
+		return nil
 	}
 
 	if *delete || *onlySetup {
@@ -257,7 +259,9 @@ func Execute() error {
 
 	var csLAPI *csbouncer.StreamBouncer
 
-	g, ctx := errgroup.WithContext(context.Background())
+	baseCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	g, ctx := errgroup.WithContext(baseCtx)
 	var coordinator *blocklistCoordinator
 	if conf.Unifi.Enabled {
 		accountIDs := make([]string, 0, len(conf.CloudflareConfig.Accounts))
@@ -348,10 +352,6 @@ func Execute() error {
 		if err := csLAPI.Init(); err != nil {
 			return err
 		}
-		if *testConfig {
-			log.Info("config is valid")
-			return nil
-		}
 		g.Go(func() error {
 			return runLAPIPoller(ctx, csLAPI, eventStreams, conf.CloudflareConfig.FullResyncFrequency)
 		})
@@ -384,10 +384,13 @@ func Execute() error {
 	_ = csdaemon.Notify(csdaemon.Ready, log.StandardLogger())
 
 	g.Go(func() error {
-		return HandleSignals(ctx)
+		return HandleSignals(baseCtx, cancel)
 	})
 
 	if err := g.Wait(); err != nil {
+		if errors.Is(err, context.Canceled) {
+			return nil
+		}
 		return fmt.Errorf("process terminated with error: %w", err)
 	}
 	if *delete {
