@@ -115,10 +115,10 @@ func newTestWorker(t *testing.T, api cloudflareAPI, account cfg.AccountConfig) *
 	r, err := rank.New(testRankingCfg)
 	require.NoError(t, err)
 	return &CloudflareWorker{
-		API:             api,
-		Account:         account,
-		Logger:          log.WithField("account_id", account.ID),
-		Count:           prometheus.NewCounter(prometheus.CounterOpts{}),
+		API:     api,
+		Account: account,
+		Logger:  log.WithField("account_id", account.ID),
+		Count:   prometheus.NewCounter(prometheus.CounterOpts{}),
 
 		Ctx:             context.Background(),
 		IPListState:     IPListState{IPSet: make(map[string]IPSetItem)},
