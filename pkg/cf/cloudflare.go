@@ -143,6 +143,7 @@ type CloudflareWorker struct {
 	lastEventSeq        uint64
 	UpdateFrequency     time.Duration
 	FullResyncFrequency time.Duration
+	nextReconcile       time.Time
 	API                 cloudflareAPI
 	Count               prometheus.Counter
 	TokenCallCount      *uint32
@@ -663,9 +664,20 @@ func (worker *CloudflareWorker) DeleteCrowdSecRules() error {
 
 // reconcileTick logs transient failures so the daemon retries on the next tick.
 func (worker *CloudflareWorker) reconcileTick() error {
-	if err := worker.Reconcile(); err != nil {
-		worker.Logger.Errorf("reconcile failed, retrying next tick: %s", err)
+	if time.Now().Before(worker.nextReconcile) {
+		return nil
 	}
+	err := worker.Reconcile()
+	if err == nil {
+		return nil
+	}
+	message := strings.ToLower(err.Error())
+	if strings.Contains(message, "rate limit") || strings.Contains(message, "too many requests") || strings.Contains(message, "429") {
+		worker.nextReconcile = time.Now().Add(5 * time.Minute)
+		worker.Logger.Warnf("cloudflare rate limited, pausing reconciliation until %s: %s", worker.nextReconcile.Format(time.RFC3339), err)
+		return nil
+	}
+	worker.Logger.Errorf("reconcile failed, retrying next tick: %s", err)
 	return nil
 }
 

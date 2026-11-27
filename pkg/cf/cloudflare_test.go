@@ -31,6 +31,7 @@ type mockCloudflareAPI struct {
 	CreateIPListCalls     int
 	ReplaceCalls          int
 	UpdateEntrypointCalls int
+	GetEntrypointCalls    int
 	EntrypointErr         error
 }
 
@@ -81,6 +82,7 @@ func (m *mockCloudflareAPI) DeleteIPListItems(ctx context.Context, accountID, id
 }
 
 func (m *mockCloudflareAPI) GetEntrypointRuleset(ctx context.Context, rc *cloudflare.ResourceContainer, phase string) (cloudflare.Ruleset, error) {
+	m.GetEntrypointCalls++
 	if m.EntrypointErr != nil {
 		return cloudflare.Ruleset{}, m.EntrypointErr
 	}
@@ -306,6 +308,21 @@ func TestReconcileErrorNamesStage(t *testing.T) {
 	err := w.Reconcile()
 	require.ErrorContains(t, err, "updating rules")
 	require.ErrorContains(t, err, "reading entrypoint ruleset")
+}
+
+func TestReconcileRateLimitCooldown(t *testing.T) {
+	api := &mockCloudflareAPI{
+		IPLists:       []cloudflare.IPList{{ID: "11", Name: "crowdsec_block"}},
+		IPListItems:   make(map[string][]cloudflare.IPListItem),
+		ZoneList:      []cloudflare.Zone{{ID: "zone1"}},
+		EntrypointErr: errors.New("exceeded available rate limit retries"),
+	}
+	w := newTestWorker(t, api, testAccount())
+	require.NoError(t, w.Init())
+	require.NoError(t, w.SetUpCloudflareResources())
+	require.NoError(t, w.reconcileTick())
+	require.NoError(t, w.reconcileTick())
+	require.Equal(t, 1, api.GetEntrypointCalls, "rate-limited ticks must back off")
 }
 
 func TestReconcileNormalizesBeforeCapacity(t *testing.T) {
