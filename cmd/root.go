@@ -11,7 +11,6 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -32,11 +31,17 @@ import (
 	"github.com/crowdsecurity/cs-cloudflare-bouncer/pkg/unifi"
 )
 
+type groupSyncer interface {
+	SyncGroup(ctx context.Context, members []string) error
+}
+
 // blocklistCoordinator merges every account's ranked IPs into one UniFi group.
 type blocklistCoordinator struct {
 	mu        sync.Mutex
 	byAccount map[string][]string
-	client    *unifi.Client
+	order     []string
+	published bool
+	client    groupSyncer
 }
 
 func (c *blocklistCoordinator) Publish(accountID string, ips []string) {
@@ -45,7 +50,11 @@ func (c *blocklistCoordinator) Publish(accountID string, ips []string) {
 	if c.byAccount == nil {
 		c.byAccount = make(map[string][]string)
 	}
+	if _, seen := c.byAccount[accountID]; !seen {
+		c.order = append(c.order, accountID)
+	}
 	c.byAccount[accountID] = append([]string(nil), ips...)
+	c.published = true
 }
 
 func (c *blocklistCoordinator) snapshot() []string {
@@ -53,7 +62,7 @@ func (c *blocklistCoordinator) snapshot() []string {
 	defer c.mu.Unlock()
 	result := make([]string, 0)
 	seen := make(map[string]struct{})
-	for _, accountID := range sortedKeys(c.byAccount) {
+	for _, accountID := range c.order {
 		for _, ip := range c.byAccount[accountID] {
 			if _, duplicate := seen[ip]; duplicate {
 				continue
@@ -65,17 +74,14 @@ func (c *blocklistCoordinator) snapshot() []string {
 	return result
 }
 
-func sortedKeys(m map[string][]string) []string {
-	keys := make([]string, 0, len(m))
-	for key := range m {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	return keys
-}
-
 func (c *blocklistCoordinator) Sync(ctx context.Context) error {
 	if c.client == nil {
+		return nil
+	}
+	c.mu.Lock()
+	ready := c.published
+	c.mu.Unlock()
+	if !ready {
 		return nil
 	}
 	return c.client.SyncGroup(ctx, c.snapshot())

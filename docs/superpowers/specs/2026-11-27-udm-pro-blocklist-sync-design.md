@@ -1,7 +1,7 @@
 # Design: Sync the ranked blocklist to a UniFi Dream Machine Pro
 
 Date: 2026-11-27
-Status: awaiting approval
+Status: approved and implemented
 
 ## Intent and why
 
