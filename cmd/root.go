@@ -276,7 +276,7 @@ func Execute() error {
 		}
 		worker.SetRankingConfig(conf.CloudflareConfig.Ranking)
 		if conf.StateFile != "" {
-			worker.StatePath = strings.ReplaceAll(conf.StateFile, "{account}", account.ID)
+			worker.StatePath = cf.StatePath(conf.StateFile, account.ID)
 		}
 		if conf.Unifi.Enabled {
 			worker.BlocklistListener = coordinator

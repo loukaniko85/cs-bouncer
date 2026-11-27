@@ -21,6 +21,11 @@ var CloudflareActionByDecisionType = map[string]string{
 	"js_challenge": "js_challenge",
 }
 
+// StatePath expands the {account} token in the state file template.
+func StatePath(template, accountID string) string {
+	return statePath(template, accountID)
+}
+
 func statePath(template, accountID string) string {
 	return strings.ReplaceAll(template, "{account}", accountID)
 }

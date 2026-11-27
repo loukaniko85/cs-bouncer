@@ -1,7 +1,7 @@
 # Design: Maintainability and hardening follow-ups
 
 Date: 2026-11-27
-Status: awaiting approval
+Status: approved and implemented
 
 ## Intent and why
 

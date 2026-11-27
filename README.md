@@ -55,6 +55,24 @@ retried on the next tick, and never stop Cloudflare updates. Use a dedicated
 local UniFi user, and pass the password via `${UNIFI_PASSWORD}` rather than
 storing it in plain text.
 
+## Inspecting the blocklist and secrets from files
+
+`-dump` prints the ranked top-N IPs that would be written, one per line,
+without contacting Cloudflare or UniFi:
+
+```sh
+crowdsec-cloudflare-bouncer -c /etc/crowdsec/bouncers/crowdsec-cloudflare-bouncer.yaml -dump
+```
+
+`state_file` (default disabled) persists the active decision set per account;
+use an `{account}` token in the path, e.g.
+`state_file: /var/lib/cs-cloudflare-bouncer/state_{account}.json`.
+
+Sensitive values can be read from mounted files instead of inline YAML:
+`crowdsec_lapi_key_file`, `token_file` under an account, and
+`unifi.password_file`. Setting both a value and its `_file` variant is a
+config error.
+
 ## Pinning the container image
 
 `:latest` is convenient but mutable. Each successful `build-container` workflow
@@ -62,7 +80,7 @@ run prints the pushed image digest in its job summary. For production, pin that
 digest instead:
 
 ```yaml
-image: ghcr.io/loukaniko85/cs-cloudflare-bouncer@sha256:<digest-from-workflow-summary>
+image: ghcr.io/loukaniko85/cs-cloudflare-bouncer@<full digest from workflow summary>
 ```
 
 ## Migration notes
