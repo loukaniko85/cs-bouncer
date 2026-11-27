@@ -293,6 +293,21 @@ func TestReconcileTickSwallowsErrors(t *testing.T) {
 	require.NoError(t, w.reconcileTick(), "a transient API error must not stop the daemon")
 }
 
+func TestReconcileErrorNamesStage(t *testing.T) {
+	api := &mockCloudflareAPI{
+		IPLists:       []cloudflare.IPList{{ID: "11", Name: "crowdsec_block"}},
+		IPListItems:   make(map[string][]cloudflare.IPListItem),
+		ZoneList:      []cloudflare.Zone{{ID: "zone1"}},
+		EntrypointErr: errors.New("rate limited"),
+	}
+	w := newTestWorker(t, api, testAccount())
+	require.NoError(t, w.Init())
+	require.NoError(t, w.SetUpCloudflareResources())
+	err := w.Reconcile()
+	require.ErrorContains(t, err, "updating rules")
+	require.ErrorContains(t, err, "reading entrypoint ruleset")
+}
+
 func TestReconcileNormalizesBeforeCapacity(t *testing.T) {
 	capacity := 2
 	account := testAccount()

@@ -454,7 +454,7 @@ func (worker *CloudflareWorker) Reconcile() error {
 	}
 	if !reflect.DeepEqual(worker.IPListState.IPSet, newSet) {
 		if err := worker.replaceListItems(newSet); err != nil {
-			return err
+			return fmt.Errorf("replacing list items: %w", err)
 		}
 	} else {
 		ListItems.Set(float64(len(newSet)))
@@ -464,7 +464,10 @@ func (worker *CloudflareWorker) Reconcile() error {
 	for _, state := range worker.CFStateByAction {
 		state.UpdateExpr()
 	}
-	return worker.UpdateRules()
+	if err := worker.UpdateRules(); err != nil {
+		return fmt.Errorf("updating rules: %w", err)
+	}
+	return nil
 }
 
 func (worker *CloudflareWorker) refreshScopedSets() {
@@ -514,7 +517,7 @@ func (worker *CloudflareWorker) UpdateRules() error {
 		rc := cloudflare.ZoneIdentifier(zone.ID)
 		current, err := worker.getAPI().GetEntrypointRuleset(worker.Ctx, rc, rulesetPhase)
 		if err != nil {
-			return err
+			return fmt.Errorf("zone %s: reading entrypoint ruleset: %w", zone.ID, err)
 		}
 		desired := make([]cloudflare.RulesetRule, 0, len(current.Rules)+len(zone.Actions))
 		for _, rule := range current.Rules {
@@ -545,7 +548,7 @@ func (worker *CloudflareWorker) UpdateRules() error {
 			Phase: rulesetPhase,
 			Rules: desired,
 		}); err != nil {
-			return err
+			return fmt.Errorf("zone %s: writing entrypoint ruleset: %w", zone.ID, err)
 		}
 	}
 	return nil
@@ -636,7 +639,7 @@ func (worker *CloudflareWorker) DeleteCrowdSecRules() error {
 		rc := cloudflare.ZoneIdentifier(zone.ID)
 		current, err := worker.getAPI().GetEntrypointRuleset(worker.Ctx, rc, rulesetPhase)
 		if err != nil {
-			return err
+			return fmt.Errorf("zone %s: reading entrypoint ruleset: %w", zone.ID, err)
 		}
 		kept := make([]cloudflare.RulesetRule, 0, len(current.Rules))
 		for _, rule := range current.Rules {
