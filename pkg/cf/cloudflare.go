@@ -10,7 +10,6 @@ import (
 	"reflect"
 	"sort"
 	"strings"
-	"sync/atomic"
 	"time"
 
 	"github.com/cloudflare/cloudflare-go"
@@ -21,10 +20,10 @@ import (
 	"github.com/crowdsecurity/crowdsec/pkg/models"
 
 	"github.com/crowdsecurity/cs-cloudflare-bouncer/pkg/cfg"
+	"github.com/crowdsecurity/cs-cloudflare-bouncer/pkg/httplimit"
 	"github.com/crowdsecurity/cs-cloudflare-bouncer/pkg/rank"
 )
 
-const CallsPerSecondLimit uint32 = 4
 const rulesetPhase = "http_request_firewall_custom"
 const ruleDescriptionPrefix = "CrowdSec "
 
@@ -152,7 +151,6 @@ type CloudflareWorker struct {
 	nextReconcile       time.Time
 	API                 cloudflareAPI
 	Count               prometheus.Counter
-	TokenCallCount      *uint32
 }
 
 // this is useful for testing allowing us to mock it.
@@ -211,10 +209,6 @@ func normalizeDecisionValue(value string) string {
 }
 
 func (worker *CloudflareWorker) getAPI() cloudflareAPI {
-	atomic.AddUint32(worker.TokenCallCount, 1)
-	if *worker.TokenCallCount > CallsPerSecondLimit {
-		time.Sleep(time.Second)
-	}
 	TotalAPICalls.Inc()
 	return worker.API
 }
@@ -749,7 +743,10 @@ func (lrt InterceptLogger) RoundTrip(req *http.Request) (*http.Response, error) 
 
 func NewCloudflareClient(token string, logger *log.Logger) (*cloudflare.API, error) {
 	httpClient := &http.Client{
-		Transport: InterceptLogger{Tripper: http.DefaultTransport, logger: logger},
+		Transport: &httplimit.RoundTripper{
+			Next:    InterceptLogger{Tripper: http.DefaultTransport, logger: logger},
+			Limiter: httplimit.Default.Limiter,
+		},
 	}
 	return cloudflare.NewWithAPIToken(token, cloudflare.HTTPClient(httpClient))
 }

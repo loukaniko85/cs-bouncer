@@ -17,6 +17,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promauto"
 
 	"github.com/crowdsecurity/cs-cloudflare-bouncer/pkg/cfg"
+	"github.com/crowdsecurity/cs-cloudflare-bouncer/pkg/httplimit"
 )
 
 var SyncTotal = promauto.NewCounter(prometheus.CounterOpts{
@@ -144,7 +145,10 @@ func New(config cfg.UnifiConfig) *Client {
 	}
 	return &Client{
 		config: config,
-		http:   &http.Client{Transport: transport},
+		http: &http.Client{Transport: &httplimit.RoundTripper{
+			Next:    transport,
+			Limiter: httplimit.Default.Limiter,
+		}},
 	}
 }
 

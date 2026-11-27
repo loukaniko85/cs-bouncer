@@ -212,17 +212,10 @@ func Execute() error {
 	// through one ordered channel per worker.
 	eventStreams := make([]chan cf.DecisionEvent, 0)
 	var eventSeq uint64
-	APICountByToken := make(map[string]*uint32)
 
 	for _, account := range conf.CloudflareConfig.Accounts {
 		events := make(chan cf.DecisionEvent)
 		eventStreams = append(eventStreams, events)
-
-		var tokenCallCount uint32 = 0
-		// we want same reference of tokenCallCount per account token
-		if _, ok := APICountByToken[account.Token]; !ok {
-			APICountByToken[account.Token] = &tokenCallCount
-		}
 
 		worker := cf.CloudflareWorker{
 			Account:             account,
@@ -232,7 +225,6 @@ func Execute() error {
 			UpdateFrequency:     conf.CloudflareConfig.UpdateFrequency,
 			FullResyncFrequency: conf.CloudflareConfig.FullResyncFrequency,
 			CFStateByAction:     make(map[string]*cf.CloudflareState),
-			TokenCallCount:      APICountByToken[account.Token],
 		}
 		worker.SetRankingConfig(conf.CloudflareConfig.Ranking)
 		if conf.Unifi.Enabled {
@@ -363,16 +355,6 @@ func Execute() error {
 			log.Error(http.ListenAndServe(net.JoinHostPort(conf.PrometheusConfig.ListenAddress, conf.PrometheusConfig.ListenPort), nil))
 		}()
 	}
-
-	apiCallCounterWindow := time.NewTicker(time.Second)
-	go func() {
-		for {
-			<-apiCallCounterWindow.C
-			for token := range APICountByToken {
-				atomic.SwapUint32(APICountByToken[token], 0)
-			}
-		}
-	}()
 
 	_ = csdaemon.Notify(csdaemon.Ready, log.StandardLogger())
 

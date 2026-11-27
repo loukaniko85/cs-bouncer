@@ -118,7 +118,7 @@ func newTestWorker(t *testing.T, api cloudflareAPI, account cfg.AccountConfig) *
 		Account:         account,
 		Logger:          log.WithField("account_id", account.ID),
 		Count:           prometheus.NewCounter(prometheus.CounterOpts{}),
-		TokenCallCount:  &mockAPICallCounter,
+
 		Ctx:             context.Background(),
 		IPListState:     IPListState{IPSet: make(map[string]IPSetItem)},
 		ActiveDecisions: make(map[string]map[string]*models.Decision),
@@ -311,6 +311,16 @@ type recordingListener struct {
 func (r *recordingListener) Publish(account string, ips []string) {
 	r.accounts = append(r.accounts, account)
 	r.ips = append(r.ips, ips)
+}
+
+func TestGetAPIIsNonBlocking(t *testing.T) {
+	api := &mockCloudflareAPI{IPListItems: make(map[string][]cloudflare.IPListItem)}
+	w := newTestWorker(t, api, testAccount())
+	start := time.Now()
+	for i := 0; i < 10; i++ {
+		require.NotNil(t, w.getAPI())
+	}
+	require.Less(t, time.Since(start), time.Second)
 }
 
 func TestReconcilePublishesRankedIPs(t *testing.T) {
